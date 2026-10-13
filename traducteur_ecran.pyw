@@ -970,6 +970,14 @@ def _rect_fenetre(hwnd):
     return rect.left, rect.top, rect.right, rect.bottom
 
 
+def fenetre_au_point(x, y):
+    """Cadre de la fenêtre visible en ce point de l'écran (comme celui noté pour un texte lu), ou None. Nos
+    traductions ne comptent pas : les clics les traversent, Windows ne les voit pas ici."""
+    hwnd = user32.WindowFromPoint(wintypes.POINT(int(x), int(y)))
+    racine = user32.GetAncestor(hwnd, GA_ROOT) if hwnd else None
+    return tuple(_rect_fenetre(racine)) if racine else None
+
+
 def fenetre_sous_souris():
     point = wintypes.POINT()
     user32.GetCursorPos(ctypes.byref(point))
@@ -3793,6 +3801,19 @@ class Calque:
                 self._rendre(self.affiches.pop(texte))
                 self.dispositions.pop(texte, None)
 
+    def cacher_couvertes(self, sauf=frozenset(), fenetre_au_point=fenetre_au_point):
+        """Range les traductions dont le texte n'est plus visible : une autre fenêtre glissée ou passée dessus,
+        leur fenêtre réduite, fermée, déplacée ou redimensionnée sans qu'on l'ait suivie. Sans attendre la
+        prochaine lecture de l'écran (elles flottaient jusque-là sur ce qui les recouvre). `sauf` : celles qu'un
+        suivi en direct est en train de déplacer (leur place enregistrée est l'ancienne)."""
+        for texte in list(self.affiches):
+            if texte in sauf:
+                continue
+            visible = fenetre_au_point(texte.x + texte.l // 2, texte.y + texte.h // 2)
+            if visible is not None and visible != tuple(texte.fenetre):
+                self._rendre(self.affiches.pop(texte))
+                self.dispositions.pop(texte, None)
+
     def chargement(self, visible):
         """Petit anneau discret qui tourne en haut à droite de l'écran tant qu'une traduction se prépare."""
         if not visible:
@@ -5209,6 +5230,7 @@ class Application:
         self.debut_deplacement = 0.0  # instant où l'on a commencé à déplacer une fenêtre
         self.fin_deplacement = 0.0  # instant où l'on a lâché une fenêtre déplacée
         self.fins_envoyees = self.fins_traitees = 0  # fins de suivi envoyées / traitées par la fenêtre principale
+        self.textes_suivis = frozenset()  # traductions qu'un suivi en direct déplace (leur place enregistrée est périmée)
         self.reveil_suivi = threading.Event()
         # Durées (secondes) relevées pour le journal : lecture de l'image, traduction des nouveaux textes.
         self.mesures = {"image": [], "traduction": [], "accessibilite": []}
@@ -5240,6 +5262,7 @@ class Application:
         self._demarrer_serveur()
         self.root.after(400, self._surveiller_presse_papiers)
         self.root.after(3000, self._verifier_extension)
+        self.root.after(100, self._garder_vitres)
 
         for action, (cle, defaut, _) in RACCOURCIS.items():  # raccourci enregistré illisible : celui par défaut
             combinaison = self.config[cle]
@@ -5426,6 +5449,8 @@ class Application:
             self.calque.decaler(deplacements, caches)
         finally:
             self.fins_traitees += 1  # même en cas d'erreur : sinon chaque suivi suivant attendrait 0,5 s
+            if not self.suivi_en_cours:
+                self.textes_suivis = frozenset()  # à leur nouvelle place : la garde des vitres les surveille à nouveau
 
     def _envoyer_fin_suivi(self, deplacements, caches):
         """Remet les traductions suivies à la fenêtre principale (qui les range ou les garde à leur
@@ -5442,6 +5467,16 @@ class Application:
         if not self.suivi_en_cours and not self._capture_utilisateur_en_cours():
             self.calque.cacher_sous(fenetre)
 
+    def _garder_vitres(self):
+        """(Fenêtre principale, toutes les 0,1 s.) Aucune traduction ne reste sur un texte qu'on ne voit plus.
+        Pas pendant une capture d'écran : l'outil Capture passe devant tout, les traductions doivent y être."""
+        try:
+            if self.calque.affiches and not self._capture_utilisateur_en_cours():
+                self.calque.cacher_couvertes(self.textes_suivis)
+        except Exception:
+            log.exception("Erreur de la garde des traductions")
+        self.root.after(100, self._garder_vitres)
+
     def _boucle_suivi(self):
         """Fait suivre les traductions au contenu pendant un défilement ou le déplacement d'une
         fenêtre, image par image : elles restent collées au texte au lieu de disparaître."""
@@ -5452,6 +5487,11 @@ class Application:
             if demande is None or not self.actif or self.arret.is_set():
                 continue
             self.suivi_en_cours = True  # pendant ce temps, rien d'autre ne touche aux traductions
+            # Python ne fait tourner qu'un fil à la fois : face à la lecture de l'écran ou à la traduction, le suivi
+            # attendait son tour à chaque appel à Windows (jusqu'à 5 ms chaque fois, plus d'une seconde de retard par
+            # image). Pendant le suivi, la main passe toutes les 0,5 ms : les traductions collent au contenu.
+            intervalle = sys.getswitchinterval()
+            sys.setswitchinterval(0.0005)
             try:
                 # Laisser finir une mise à jour déjà commencée, et la fin du suivi précédent (sinon on
                 # reprendrait des traductions déjà rangées, à leur ancienne place).
@@ -5467,7 +5507,10 @@ class Application:
             except Exception:
                 log.exception("Échec du suivi en direct")
             finally:
+                sys.setswitchinterval(intervalle)
                 self.suivi_en_cours = False
+                if self.fins_traitees >= self.fins_envoyees:
+                    self.textes_suivis = frozenset()  # (sinon, la fenêtre principale le fera en les rangeant)
                 self.reveil_image.set()
                 self.reveil.set()
                 self.reveil_accessibilite.set()
@@ -5514,6 +5557,7 @@ class Application:
                      if d and zone[0] <= t.x + t.l // 2 < zone[2] and zone[1] <= t.y + t.h // 2 < zone[3]]
         if not affichees:
             return  # rien à faire suivre : l'analyse d'image relira la zone une fois immobile
+        self.textes_suivis = frozenset(t for t, _, _ in affichees)  # (la garde des vitres les laisse au suivi)
         # Copie : une analyse de l'image déjà en cours pourrait encore modifier la référence pendant le
         # suivi (des traductions seraient alors prises pour un en-tête fixe et resteraient sur place).
         avant, origine = suivi.reference.copy(), suivi.image[1]
@@ -5600,6 +5644,7 @@ class Application:
         racine = user32.GetAncestor(hwnd, GA_ROOT) or hwnd
         depart = _rect_fenetre(racine)
         affichees = [(t, v, d) for t, v, d in self.calque.instantane() if d and tuple(t.fenetre) == depart]
+        self.textes_suivis = frozenset(t for t, _, _ in affichees)  # (la garde des vitres les laisse au suivi)
         prises = {t: v.etat for t, v, _ in affichees}
         debut = time.monotonic()
         dx = dy = 0

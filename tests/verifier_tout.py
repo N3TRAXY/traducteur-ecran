@@ -162,6 +162,36 @@ te.Application._cmd_cacher_sous(faux_capture, (0, 0, 2560, 1440))
 faux_capture._capture_utilisateur_en_cours = lambda: False
 te.Application._cmd_cacher_sous(faux_capture, (0, 0, 2560, 1440))
 verifier(caches == [(0, 0, 2560, 1440)], "capture d'écran : les traductions restent quand l'outil Capture passe devant")
+# Fenêtre déplacée ou défilement suivis avec ~1 s de retard : le fil du suivi attendait son tour face aux autres fils
+# Python (lecture de l'écran, traduction). Pendant un suivi, Python passe la main bien plus souvent.
+faux_suivi = types.SimpleNamespace(arret=threading.Event(), reveil_suivi=threading.Event(), demande_suivi=("fenetre", 1),
+                                   actif=True, calque=types.SimpleNamespace(generation=0), fins_traitees=0,
+                                   fins_envoyees=0, suivi_en_cours=False, reveil_image=threading.Event(),
+                                   reveil=threading.Event(), reveil_accessibilite=threading.Event(),
+                                   demande_pendant_suivi=None, textes_suivis=frozenset())
+intervalles = []
+faux_suivi._suivre_fenetre = lambda hwnd: (intervalles.append(sys.getswitchinterval()), faux_suivi.arret.set())
+faux_suivi.reveil_suivi.set()
+intervalle_normal = sys.getswitchinterval()
+te.Application._boucle_suivi(faux_suivi)
+verifier(intervalles and intervalles[0] <= 0.001 and sys.getswitchinterval() == intervalle_normal,
+         "suivi en direct : Python passe la main souvent (pas de retard), puis revient à la normale", intervalles)
+# Une autre fenêtre passée devant (glissée par-dessus, Alt+Tab), une fenêtre réduite : ses traductions ne restent pas
+# à flotter jusqu'à la prochaine lecture de l'écran. Celles qu'un suivi en direct est en train de déplacer, si.
+FENETRE_A, FENETRE_B = (0, 0, 900, 600), (400, 300, 1300, 900)
+gardes = [te.Texte("Open Project", 100, 100, 90, 20, "texte", FENETRE_A, "a.exe"),
+          te.Texte("a month ago", 600, 500, 90, 20, "texte", FENETRE_A, "a.exe"),
+          te.Texte("Settings", 700, 450, 60, 20, "texte", FENETRE_A, "a.exe"),
+          te.Texte("Profile", 200, 400, 60, 20, "texte", FENETRE_A, "a.exe")]
+calque_garde = te.Calque.__new__(te.Calque)
+rangees = []
+calque_garde.affiches = {t: types.SimpleNamespace(cacher=lambda t=t: rangees.append(t.texte)) for t in gardes}
+calque_garde.dispositions, calque_garde.libres = {t: None for t in gardes}, []
+au_point = lambda x, y: None if x < 250 and y > 300 else (FENETRE_B if x >= 400 and y >= 300 else FENETRE_A)
+calque_garde.cacher_couvertes(sauf={gardes[2]}, fenetre_au_point=au_point)
+verifier(sorted(t.texte for t in calque_garde.affiches) == ["Open Project", "Profile", "Settings"]
+         and rangees == ["a month ago"],
+         "traduction recouverte par une autre fenêtre : rangée tout de suite (sauf celles d'un suivi en direct)", rangees)
 # Stream Discord regardé en écrivant dans le chat : la fenêtre est « périmée » (on vient de taper) mais la vidéo n'a
 # pas bougé ; son texte ne doit pas être traduit entre deux relectures (il clignotait).
 FENETRE = (0, 0, 2560, 1392)
@@ -382,6 +412,13 @@ with open(os.path.join(dossier, "manifest.json"), encoding="utf-8") as f:
     manifeste = json.load(f)
 verifier(manifeste.get("version") == etat.get("extension"), "le programme connaît la version de l'extension")
 verifier({"storage", "alarms"} <= set(manifeste.get("permissions", [])), "permissions de l'extension")
+# « 'background.scripts' requires manifest version of 2 or lower » (Opera, Chrome) : « scripts » n'est que pour Firefox,
+# ajouté à sa copie de l'extension par construire_exe.bat.
+with open(os.path.join(ICI, "construire_exe.bat"), encoding="utf-8") as f:
+    construction = f.read()
+verifier(set(manifeste.get("background", {})) == {"service_worker"}
+         and "m['background']={'scripts': ['fond.js']}" in construction,
+         "extension : pas d'erreur « background.scripts » dans Chrome et Opera, Firefox a ses « scripts »")
 with open(os.path.join(dossier, "page.js"), encoding="utf-8") as f:
     page = f.read()
 verifier("whiteSpace" in page and "< 20000" in page, "page.js garde les retours à la ligne et accepte les longs textes")

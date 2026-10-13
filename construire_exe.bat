@@ -22,7 +22,7 @@ rem Extension du navigateur (traduction directement dans les pages), a charger d
 xcopy /e /i /y /q "%ICI%extension" "dist\TraducteurEcran\extension" >nul
 rem La meme pour Firefox : son manifeste a en plus l'identifiant que Firefox exige (Chrome le signale comme une erreur).
 xcopy /e /i /y /q "%ICI%extension" "dist\TraducteurEcran\extension-firefox" >nul
-py -c "import json; c='dist/TraducteurEcran/extension-firefox/manifest.json'; m=json.load(open(c, encoding='utf-8')); m['browser_specific_settings']={'gecko': {'id': '{303484cc-3607-4b0a-8576-1ea9bf60a675}', 'strict_min_version': '140.0', 'data_collection_permissions': {'required': ['none']}}}; json.dump(m, open(c, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)" || goto :erreur
+py -c "import json; c='dist/TraducteurEcran/extension-firefox/manifest.json'; m=json.load(open(c, encoding='utf-8')); m['background']={'scripts': ['fond.js']}; m['browser_specific_settings']={'gecko': {'id': '{303484cc-3607-4b0a-8576-1ea9bf60a675}', 'strict_min_version': '140.0', 'data_collection_permissions': {'required': ['none']}}}; json.dump(m, open(c, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)" || goto :erreur
 rem Version et depot GitHub, lus dans le programme.
 py -c "import re;s=open('TraducteurEcran.pyw',encoding='utf-8').read();q=chr(34);print(re.search('VERSION_PROGRAMME = '+q+'([^'+q+']+)',s).group(1))" > version.txt || goto :erreur
 py -c "import re;s=open('TraducteurEcran.pyw',encoding='utf-8').read();q=chr(34);print(re.search('DEPOT_GITHUB = '+q+'([^'+q+']*)',s).group(1) or 'aucun')" > depot.txt || goto :erreur
