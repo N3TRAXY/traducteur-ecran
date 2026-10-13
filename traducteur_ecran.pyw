@@ -5224,6 +5224,8 @@ class Application:
         self.installation_a_refaire = False  # le choix a changé pendant un téléchargement
         self.progression_installation = None  # (texte, fraction) pendant un téléchargement
         self.erreur_installation = ""  # pourquoi le dernier téléchargement a échoué
+        # (Avant l'icône : son menu, construit par un autre fil, le lit tout de suite.)
+        self.mise_a_jour = None  # (version, lien de l'installateur) d'une version plus récente, s'il y en a une
 
         self.icone = self._creer_icone()
         threading.Thread(target=self.icone.run, daemon=True).start()
@@ -5233,7 +5235,6 @@ class Application:
         threading.Thread(target=self._boucle_lecture, daemon=True).start()
         threading.Thread(target=self._boucle_image, daemon=True).start()
         threading.Thread(target=self._boucle_suivi, daemon=True).start()
-        self.mise_a_jour = None  # (version, lien de l'installateur) d'une version plus récente, s'il y en a une
         if EST_EXE and DEPOT_GITHUB:
             threading.Thread(target=self._surveiller_mises_a_jour, name="mises_a_jour", daemon=True).start()
         self._demarrer_serveur()

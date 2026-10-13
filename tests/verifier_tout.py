@@ -65,6 +65,15 @@ verifier(te.numero_de_version("v2.10.1") > te.numero_de_version("2.9.9") == (2, 
          "versions comparées dans le bon ordre (2.10 après 2.9)")
 verifier(te.grands_modeles_manquants({("ja", "en")}) == [] and (te.DEPOT_GITHUB or te.derniere_version() is None),
          "grand modèle demandé seulement pour l'anglais → français ; sans dépôt, pas de recherche de mise à jour")
+# Le menu de l'icône est construit par un autre fil dès sa création : tout ce qu'il lit doit déjà exister
+# (« mise_a_jour » créé après l'icône faisait planter le menu au lancement de l'exe).
+import inspect
+import re
+debut = inspect.getsource(te.Application.__init__)
+avant_icone = debut[:debut.index("self.icone = self._creer_icone()")]
+lus_par_le_menu = set(re.findall(r"self\.(\w+)", inspect.getsource(te.Application._creer_icone)))
+crees_apres = sorted(n for n in lus_par_le_menu if f"self.{n} =" in debut and f"self.{n} =" not in avant_icone)
+verifier(not crees_apres, "le menu de l'icône ne lit rien qui soit créé après lui", crees_apres)
 # Discord : une phrase qui cite du code arrive en morceaux ; on la recolle (code protégé), sans fusionner deux messages.
 morceaux = [(505, 1011, 541, 1033, "Yeah"), (544, 1013, 700, 1032, "_CameraDepthTexture"),
             (505, 1011, 1898, 1077, "is for getting the depth of opaque surfaces behind what you're drawing. "
