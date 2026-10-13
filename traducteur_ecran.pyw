@@ -86,7 +86,7 @@ GRANDS_MODELES = {("en", "fr"): "en_fr"}
 VERSION_PROGRAMME = "2.0.0"
 # Dépôt GitHub (« compte/dépôt ») où sont publiées les versions (mises à jour) et les grands modèles. Vide :
 # ni mise à jour automatique, ni grand modèle téléchargé (celui-ci peut alors être livré à côté du programme).
-DEPOT_GITHUB = ""
+DEPOT_GITHUB = "N3TRAXY/traducteur-ecran"
 DOSSIERS_MODELES = ([os.path.join(os.path.dirname(sys.executable), "modeles")] if EST_EXE else []) + [
     os.path.join(APP_DIR, "modeles")]
 
