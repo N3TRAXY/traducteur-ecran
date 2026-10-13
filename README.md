@@ -16,6 +16,18 @@ sur internet.
 Le programme se met à jour tout seul : quand une nouvelle version sort, il propose « Mettre à jour ».
 Tous les raccourcis clavier se changent dans la rubrique « Options ».
 
+## Ce qu'il sait faire
+
+- Traduire tout l'écran par-dessus le texte d'origine (logiciels, Discord…), et les sites directement dans la page
+  avec l'extension.
+- **Ctrl + Alt + Z** : traduire une zone choisie à la souris, même en pause, même le texte d'une image ou d'un jeu.
+- **Ctrl + Alt + Entrée** : écrire en français, envoyer dans une autre langue.
+- **Historique** des dernières traductions, à relire ou copier.
+- **Carte graphique NVIDIA** utilisée toute seule si elle est là : environ 10 fois plus rapide.
+- Grands modèles de traduction (bien meilleurs) pour l'anglais, l'espagnol, le portugais, l'italien, le russe,
+  l'ukrainien, le polonais et le chinois.
+- « Options » → **Signaler un problème** : une page de ce dépôt préremplie, avec le journal à joindre.
+
 ## Pour les développeurs
 
 - `traducteur_ecran.pyw` : le programme (Python 3.14, Windows 10/11).
@@ -25,6 +37,10 @@ Tous les raccourcis clavier se changent dans la rubrique « Options ».
 
 ## Licences des modèles
 
-Traduction par [Argos Translate](https://github.com/argosopentech/argos-translate) (MIT) et, de
-l'anglais vers le français, par le modèle [OPUS-MT](https://github.com/Helsinki-NLP/Tatoeba-Challenge)
-« transformer-big » (CC-BY 4.0, Helsinki-NLP).
+Traduction par [Argos Translate](https://github.com/argosopentech/argos-translate) (MIT) et par les modèles
+[OPUS-MT](https://github.com/Helsinki-NLP/Tatoeba-Challenge) de Helsinki-NLP (CC-BY 4.0), convertis pour
+CTranslate2 et publiés dans la version [« modeles »](../../releases/tag/modeles) : opus-mt-tc-big-en-fr,
+opus-mt-tc-big-itc-itc, opus-mt-tc-big-zle-fr, opus-mt-tc-big-zlw-en, opus-mt-tc-bible-big-zhx-en. Carte graphique : bibliothèque cuBLAS de NVIDIA, téléchargée depuis PyPI (paquet `nvidia-cublas-cu12`
+publié par NVIDIA), seulement sur les PC qui ont une carte NVIDIA.
+
+L'extension pour les boutiques des navigateurs : voir [`boutiques/`](boutiques/ETAPES.md).

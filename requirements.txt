@@ -6,6 +6,7 @@ keyboard
 comtypes
 customtkinter
 argostranslate
+ctranslate2>=4.8.3
 sacremoses
 py3langid
 winrt-runtime

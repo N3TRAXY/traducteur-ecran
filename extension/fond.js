@@ -20,10 +20,17 @@ function badge(connecte, actif, aRecharger) {
   chrome.action.setBadgeBackgroundColor({ color: !connecte ? "#D14343" : aRecharger ? "#E8890C" : "#6366F1" });
 }
 
+// Installée depuis le dossier du programme (« mode développeur ») ? Depuis une boutique, elle se met à jour
+// toute seule : sa version n'a pas à suivre celle du dossier.
+let enDeveloppement = true;
+if (chrome.management && chrome.management.getSelf) {
+  chrome.management.getSelf().then((infos) => { enDeveloppement = infos.installType === "development"; }).catch(() => {});
+}
+
 // L'extension chargée par le navigateur est-elle plus ancienne que celle du dossier (mise à jour, mais
 // pas rechargée dans la page des extensions) ?
 function aRecharger(etat) {
-  return Boolean(etat && etat.extension && etat.extension !== chrome.runtime.getManifest().version);
+  return Boolean(enDeveloppement && etat && etat.extension && etat.extension !== chrome.runtime.getManifest().version);
 }
 
 chrome.runtime.onMessage.addListener((message, _expediteur, repondre) => {
