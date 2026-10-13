@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --fond: #12131a; --carte: #1c1e2a; --bord: #2a2c3a; --texte: #e4e6ee; --gris: #9aa0b4; --accent: #6366f1; }
+  * { box-sizing: border-box; }
+  body { width: 320px; margin: 0; padding: 14px; font: 13px "Segoe UI", system-ui, sans-serif; background: var(--fond);
+         color: var(--texte); }
+  .entete { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .entete img { width: 34px; height: 34px; border-radius: 9px; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .etat { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gris); margin-top: 2px; }
+  .point { width: 8px; height: 8px; border-radius: 50%; background: #5bd17f; flex: none; }
+  .etat.pause .point { background: #e8b30c; }
+  .etat.erreur { color: #f07b7b; }
+  .etat.erreur .point { background: #f07b7b; }
+  .carte { background: var(--carte); border-radius: 12px; padding: 12px 14px; margin-top: 8px; }
+  .principale { display: flex; align-items: center; justify-content: space-between; padding: 14px; }
+  .principale strong { font-size: 14px; display: block; }
+  small { display: block; color: var(--gris); font-size: 11px; margin-top: 2px; word-break: break-all; }
+  .ligne { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .ligne + .ligne { border-top: 1px solid var(--bord); margin-top: 10px; padding-top: 10px; }
+  .interrupteur { position: relative; width: 42px; height: 24px; flex: none; }
+  .interrupteur input { opacity: 0; width: 0; height: 0; }
+  .glissiere { position: absolute; inset: 0; background: #3a3d4e; border-radius: 12px; cursor: pointer; transition: .15s; }
+  .glissiere::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px;
+                       background: #fff; border-radius: 50%; transition: .15s; }
+  input:checked + .glissiere { background: var(--accent); }
+  input:checked + .glissiere::before { transform: translateX(18px); }
+  input:disabled + .glissiere { opacity: .4; cursor: default; }
+  select { background: #2a2c3a; color: var(--texte); border: 1px solid #3a3d4e; border-radius: 8px; padding: 5px 8px;
+           font: 12px "Segoe UI", sans-serif; cursor: pointer; }
+  #ouvrir { width: 100%; margin-top: 10px; padding: 9px; border: 1px solid #3a3d4e; border-radius: 10px;
+            background: transparent; color: var(--texte); font: 13px "Segoe UI", sans-serif; cursor: pointer; }
+  #ouvrir:hover { background: #232533; }
+  #ouvrir:disabled { opacity: .5; cursor: default; }
+  .raccourcis { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; color: var(--gris); font-size: 11px; }
+  kbd { font: 600 10px "Segoe UI", sans-serif; background: #2a2c3a; border: 1px solid #3a3d4e; border-radius: 4px;
+        padding: 1px 5px; color: var(--texte); }
+</style>
+</head>
+<body>
+  <div class="entete">
+    <img src="icones/48.png" alt="">
+    <div>
+      <h1>Traducteur d'écran</h1>
+      <div class="etat" id="etat-ligne"><span class="point"></span><span id="etat">…</span></div>
+    </div>
+  </div>
+
+  <div class="carte principale">
+    <div><strong>Traduction</strong><small>La même que dans le programme</small></div>
+    <label class="interrupteur"><input type="checkbox" id="actif"><span class="glissiere"></span></label>
+  </div>
+
+  <div class="carte">
+    <div class="ligne">
+      <div>Traduire vers</div>
+      <select id="langue"></select>
+    </div>
+    <div class="ligne">
+      <div>Traduire ce site<small id="site"></small></div>
+      <label class="interrupteur"><input type="checkbox" id="ce-site"><span class="glissiere"></span></label>
+    </div>
+  </div>
+
+  <button id="ouvrir">Ouvrir le traducteur</button>
+
+  <div class="raccourcis">
+    <span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>T</kbd> marche / pause</span>
+    <span><kbd>Ctrl</kbd> <kbd>Alt</kbd> <kbd>Entrée</kbd> traduire ton message</span>
+  </div>
+  <script src="fenetre.js"></script>
+</body>
+</html>

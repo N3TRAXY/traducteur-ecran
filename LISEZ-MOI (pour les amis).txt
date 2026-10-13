@@ -1,0 +1,64 @@
+TRADUCTEUR D'ÉCRAN
+==================
+
+Traduit tout seul le texte de ton écran dans ta langue, directement par-dessus.
+Les pseudos, les nombres et le texte des images et des vidéos restent tels
+quels. Tout se fait sur ton PC : rien n'est envoyé sur internet.
+
+INSTALLER (une seule fois)
+  1. Clic droit sur le fichier .zip → « Extraire tout… ». Choisis un endroit où
+     le dossier restera (par exemple « Documents ») et ne le déplace plus.
+  2. Dans le dossier extrait, double-clic sur TraducteurEcran.exe.
+     Si Windows affiche « Windows a protégé votre ordinateur » : clique sur
+     « Informations complémentaires » puis « Exécuter quand même ».
+  3. Une fenêtre te demande ta langue et les langues que tu veux comprendre.
+     Elles se téléchargent une seule fois (il faut internet), ensuite tout
+     marche hors ligne.
+
+C'EST PARTI
+  La page « Accueil » du programme résume tout. En bref :
+  - Ton écran est traduit tout seul. Laisse le programme ouvert.
+  - Ctrl + Alt + T : mettre en pause, ou reprendre.
+  - Ctrl + Alt + Entrée : écris ton message en français dans n'importe quelle
+    zone de texte, appuie sur ces touches, il est traduit, prêt à envoyer.
+  - Ctrl + C sur un texte traduit : c'est la traduction qui est copiée.
+  - Impr. écran ou Win + Maj + S : capture d'écran avec les traductions.
+  - Un petit anneau qui tourne en haut à droite : une traduction se prépare.
+  Fermer la fenêtre n'arrête pas le programme : il reste près de l'horloge
+  (icône bleue, grise en pause). Clic droit dessus pour l'ouvrir ou le quitter.
+
+LES RUBRIQUES DU PROGRAMME (barre à gauche)
+  - Accueil : comment ça marche.
+  - Langues : ta langue, et les langues que tu veux comprendre (« Choisir… »).
+  - Écrire : la langue de Ctrl + Alt + Entrée, et « Mes mots » : un mot à ne
+    jamais traduire (un nom, un pseudo…), ou un mot avec ta traduction.
+  - Apparence : couleur, taille et transparence des traductions.
+  - Où traduire : toutes les fenêtres, ou seulement certaines.
+  - Sites internet : installer l'extension (voir plus bas).
+  - Options : lancer avec Windows, tous les raccourcis clavier, rapidité.
+
+SITES INTERNET : L'EXTENSION (recommandé)
+  Avec elle, les sites sont traduits directement dans la page : plus net et
+  plus rapide. Le programme doit être lancé.
+  Dans le programme, rubrique « Sites internet », suis les étapes :
+   1. Dans le menu de ton navigateur, ouvre « Extensions » : la page qui les
+      gère toutes.
+   2. Active « Mode développeur » : l'interrupteur en haut à droite de cette
+      page (dans Edge : à gauche).
+   3. Clique sur « Charger l'extension non empaquetée » (ou « décompressée »),
+      puis sur le bouton « Le dossier » du programme : colle l'adresse copiée
+      (Ctrl + V) et choisis « Sélectionner le dossier ».
+   4. Épingle l'extension : l'icône des extensions (pièce de puzzle ou cube)
+      près de la barre d'adresse, puis la punaise. Un clic sur l'extension :
+      mettre en pause, changer la langue, ou ne pas traduire un site.
+  Si son icône affiche « ↻ » : sur la page des extensions, clique sur le
+  bouton ↻ de la carte « Traducteur d'écran » (après une mise à jour).
+  Firefox : utilise plutôt le dossier « extension-firefox ». Tape
+  about:debugging, clique sur « Ce Firefox » puis « Charger un module
+  complémentaire temporaire… » et choisis le fichier manifest.json de ce
+  dossier. Firefox l'enlève à chaque fermeture.
+
+LIMITES
+  Les jeux ne sont pas traduits. Le texte très petit ou très stylisé peut être
+  mal lu : dans le doute, il est laissé tel quel.
+  Fonctionne sous Windows 10 (version 2004 ou plus récente) et Windows 11.

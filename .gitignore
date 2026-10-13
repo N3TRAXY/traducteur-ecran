@@ -1,0 +1,12 @@
+# Fichiers fabriqués (publiés dans les « Releases », pas dans le code)
+TraducteurEcran-Windows.zip
+TraducteurEcran-Installation.exe
+*.exe
+build/
+dist/
+
+# Fichiers de travail
+__pycache__/
+*.pyc
+graphify-out/
+.claude/

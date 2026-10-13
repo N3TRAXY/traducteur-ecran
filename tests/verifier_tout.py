@@ -1,0 +1,382 @@
+"""Vérifie le Traducteur d'écran, cas par cas : tous les problèmes déjà rencontrés, pour qu'ils ne reviennent pas.
+
+    py -B tests/verifier_tout.py
+
+À lancer après chaque modification (une à deux minutes : les vrais modèles de traduction sont utilisés).
+Rien n'est enregistré dans les réglages ni dans les traductions mémorisées de l'utilisateur.
+"""
+import http.client
+import importlib.machinery
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import threading
+import types
+
+sys.dont_write_bytecode = True  # pas de dossier __pycache__ dans le projet
+sys.stdout.reconfigure(errors="replace")  # une console sans japonais n'arrête pas les vérifications
+ICI = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+chargeur = importlib.machinery.SourceFileLoader("te", os.path.join(ICI, "traducteur_ecran.pyw"))
+spec = importlib.util.spec_from_loader("te", chargeur)
+te = importlib.util.module_from_spec(spec)
+chargeur.exec_module(te)
+te.CACHE_TRADUCTIONS = os.path.join(tempfile.mkdtemp(prefix="traducteur_tests_"), "traductions.json")
+
+echecs = []
+
+
+def verifier(condition, nom, detail=""):
+    print(("  ok   " if condition else "  ÉCHEC ") + nom + ("" if condition else f"  → {detail}"))
+    if not condition:
+        echecs.append(nom)
+
+
+# --------------------------------------------------------------------------- sans modèle de traduction
+print("Fonctions de base")
+for texte in ("court", "Ligne 1\nLigne 2\n\nLigne 3", "Phrase un. " * 30, "日本語の文。" * 40 + "\nEnd"):
+    verifier("".join(te.decouper_texte(texte)) == texte, "découpage sans perte : " + texte[:20].replace("\n", " "))
+verifier(len(te.decouper_texte("A\nB")) == 3, "un texte sur deux lignes est découpé")
+protege, codes = te.proteger_code("Click `Save` then `Exit`")
+verifier(protege == "Click [A] then [B]" and te.remettre_code("Cliquez [A] puis [B]", codes) == "Cliquez `Save` puis `Exit`",
+         "code cité protégé puis remis")
+verifier(te.remettre_code("Cliquez puis [B]", codes) is None, "repère de code perdu : traduction refusée")
+verifier(te.remettre_inconnus("use the `x` — ok", "utilise ⁇ x ⁇ ⁇ ok") == "utilise ` x ` — ok", "caractères inconnus remis")
+verifier(te.traduction_aberrante("la mastication " * 10) and te.traduction_aberrante("?" * 20)
+         and not te.traduction_aberrante("Une phrase tout à fait normale, avec des mots variés et sensés."),
+         "boucles du modèle repérées")
+verifier(te.developper_argot("idk tbh ngl that was kinda sus") == "I don't know, to be honest, not gonna lie, that was kind of suspicious",
+         "argot du chat", te.developper_argot("idk tbh ngl that was kinda sus"))
+verifier(te.developper_argot("Waffffie soooo cute") == "Waffffie so cute", "lettres répétées (pas dans les pseudos)",
+         te.developper_argot("Waffffie soooo cute"))
+verifier(te.touches_du_raccourci("ctrl+alt+t") == (3, 0x54) and te.touches_du_raccourci("t") is None
+         and te.touches_du_raccourci("print screen") == (0, 0x2C) and te.touches_du_raccourci("f8") == (0, 0x77),
+         "raccourci clavier lu pour Windows (une touche seule : seulement si elle n'écrit rien)")
+verifier(te.noms_des_touches("ctrl+alt+enter") == ["Ctrl", "Alt", "Entrée"] and te.noms_des_touches("print screen")
+         == ["Impr. écran"] and te.noms_des_touches("left windows+shift+s") == ["Win", "Maj", "S"]
+         and te.noms_des_touches("") == ["Aucun"], "raccourcis dessinés avec les noms français des touches")
+verifier(all(te.CONFIG_DEFAUT[cle] == defaut for cle, defaut, _ in te.RACCOURCIS.values())
+         and len({te.touches_du_raccourci(d) for _, d, _ in te.RACCOURCIS.values()}) == len(te.RACCOURCIS),
+         "tous les raccourcis réglables, sans doublon par défaut")
+verifier(te.numero_de_version("v2.10.1") > te.numero_de_version("2.9.9") == (2, 9, 9)
+         and te.numero_de_version(te.VERSION_PROGRAMME) >= (2, 0, 0),
+         "versions comparées dans le bon ordre (2.10 après 2.9)")
+verifier(te.grands_modeles_manquants({("ja", "en")}) == [] and (te.DEPOT_GITHUB or te.derniere_version() is None),
+         "grand modèle demandé seulement pour l'anglais → français ; sans dépôt, pas de recherche de mise à jour")
+# Discord : une phrase qui cite du code arrive en morceaux ; on la recolle (code protégé), sans fusionner deux messages.
+morceaux = [(505, 1011, 541, 1033, "Yeah"), (544, 1013, 700, 1032, "_CameraDepthTexture"),
+            (505, 1011, 1898, 1077, "is for getting the depth of opaque surfaces behind what you're drawing. "
+                                    "If you need the depth of the pixel, you probably want something else like"),
+            (1324, 1057, 1553, 1076, "UNITY_Z_0_FAR_FROM_CLIPSPACE"), (1563, 1061, 1596, 1075, "modifié"),
+            (505, 1100, 872, 1122, "did you set the Render Queues properly?"),
+            (505, 1126, 888, 1148, "so that the materials always render in the correct order?")]
+recolles = te.recoller_morceaux(morceaux, 22)
+M = te.MARQUE_CODE
+verifier([r[5] for r in recolles] == [[0, 1, 2, 3], [4], [5], [6]]
+         and recolles[0][4].startswith("Yeah " + M + "_CameraDepthTexture" + M + " is for")
+         and recolles[0][:4] == (505, 1011, 1898, 1077), "morceaux d'une phrase de Discord recollés", recolles[0][4][:80])
+# Texte sur un fond qui bouge (vidéo derrière une fenêtre translucide, stream) : le même texte, gardé tel quel ;
+# un chiffre qui change, lui, doit être relu.
+from PIL import Image, ImageDraw
+import numpy as np
+
+
+def image_texte(texte, decalage):
+    """Texte clair sur un fond flou qui se déplace (vidéo vue à travers une fenêtre translucide), un peu bruité."""
+    x, y = np.arange(260)[None, :, None], np.arange(40)[:, None, None]
+    fond = np.repeat(30 + 25 * np.sin((x + decalage) / 23.0) + 10 * np.cos((y + decalage) / 9.0), 3, axis=2)
+    fond = fond + np.random.default_rng(decalage).integers(-6, 7, fond.shape)
+    image = Image.fromarray(np.clip(fond, 0, 255).astype(np.uint8))
+    ImageDraw.Draw(image).text((6, 10), texte, fill=(235, 235, 235), font=te.police_pil(18))
+    return np.asarray(image).astype(np.int16)
+
+
+suivi_essai = te.SuiviEcran.__new__(te.SuiviEcran)
+morceau = te.Texte("Open Project 12:01", 0, 0, 260, 40, "morceau", (0, 0, 260, 40))
+suivi_essai.motifs = {morceau: image_texte("Open Project 12:01", 0)}
+verifier(suivi_essai._memes_lettres(morceau, image_texte("Open Project 12:01", 37), 0, 0, 260, 40)
+         and not suivi_essai._memes_lettres(morceau, image_texte("Open Project 12:02", 37), 0, 0, 260, 40)
+         and not suivi_essai._memes_lettres(morceau, image_texte("Open Project 12:02", 0), 0, 0, 260, 40),
+         "fond qui bouge : le texte reste ; un chiffre qui change : relu")
+motif = image_texte("Open Project 12:01", 0)
+avec_encre = te.Texte("Open Project 12:01", 0, 0, 260, 40, "morceau", (0, 0, 260, 40), encre=te.couleur_encre(motif))
+suivi_essai.motifs = {avec_encre: motif}
+verifier(bool(avec_encre.encre) and suivi_essai._memes_lettres(avec_encre, image_texte("Open Project 12:01", 37), 0, 0, 260, 40)
+         and not suivi_essai._memes_lettres(avec_encre, image_texte("Open Project 12:02", 37), 0, 0, 260, 40),
+         "même texte reconnu à la couleur de ses lettres, malgré le fond")
+verifier(te.LecteurImage._sans_icone([("@", 0, 0, 22, 22), ("World", 30, 4, 70, 20)]) == [("World", 30, 4, 70, 20)]
+         and len(te.LecteurImage._sans_icone([("a", 0, 5, 8, 20), ("month", 12, 5, 50, 20)])) == 2
+         and len(te.LecteurImage._sans_icone([("a", 0, 9, 9, 19), ("month", 16, 3, 60, 20)])) == 2
+         and len(te.LecteurImage._sans_icone([("a", 0, 2, 8, 11), ("month", 14, 1, 57, 11)])) == 2
+         and len(te.LecteurImage._sans_icone([("I", 0, 5, 4, 20), ("agree", 8, 5, 50, 20)])) == 2,
+         "icône lue comme une lettre (« @ World ») retirée, pas « a month »")
+# Lecture de l'écran : texte blanc sur un bouton coloré (« Open Project » était lu « n Pro• »), mots entiers.
+from PIL import ImageFont
+faux_ecran = Image.new("RGB", (990, 120), (37, 37, 37))
+dessin = ImageDraw.Draw(faux_ecran)
+dessin.rounded_rectangle((840, 20, 956, 53), 3, fill=(23, 145, 168))
+dessin.text((898, 36), "Open Project", font=ImageFont.truetype("segoeuib.ttf", 15), fill="white", anchor="mm")
+dessin.text((60, 36), "Learn", font=ImageFont.truetype("segoeuib.ttf", 16), fill="white", anchor="lm")
+dessin.rounded_rectangle((520, 70, 700, 102), 3, fill=(23, 145, 168))
+dessin.text((610, 86), "Create New Project", font=ImageFont.truetype("segoeuib.ttf", 15), fill="white", anchor="mm")
+dessin.text((700, 36), "a month ago", font=ImageFont.truetype("segoeui.ttf", 15), fill=(220, 220, 220), anchor="lm")
+image_bgra = np.dstack([np.asarray(faux_ecran)[..., ::-1], np.full((120, 990), 255, np.uint8)])
+gras_bouton = te.couleurs_autour(image_bgra, (0, 0), te.Texte("Open Project", 852, 29, 92, 16, "texte", (0, 0, 990, 120)))
+gras_date = te.couleurs_autour(image_bgra, (0, 0), te.Texte("a month ago", 699, 29, 88, 16, "texte", (0, 0, 990, 120)))
+verifier(gras_bouton[4] and not gras_date[4], "texte en gras reconnu (la traduction prend la même graisse)",
+         (gras_bouton[4], gras_date[4]))
+lus = {t.texte: (t.x, t.y) for t in te.LecteurImage().lire(image_bgra, (0, 0))}
+verifier({"Open Project", "Learn", "Create New Project"} <= set(lus) and 850 <= lus["Open Project"][0] <= 875
+         and 25 <= lus["Open Project"][1] <= 35, "boutons colorés lus justes, à la bonne place", lus)
+# Fenêtre déplacée : ses textes lus la suivent (sinon, relus à moitié, ils revenaient décalés et en double).
+suivi_essai.morceaux = [te.Texte("Learn", 100, 200, 40, 18, "morceau", (50, 150, 500, 600)),
+                        te.Texte("Other", 900, 200, 40, 18, "morceau", (800, 100, 1200, 600))]
+suivi_essai.perdus, suivi_essai.a_decaler = [], []
+suivi_essai.motifs = {suivi_essai.morceaux[0]: "motif"}
+suivi_essai.decaler_fenetre((50, 150, 500, 600), -60, -37)
+suivi_essai._decaler_fenetres()
+deplace = suivi_essai.morceaux[0]
+verifier((deplace.x, deplace.y, deplace.fenetre) == (40, 163, (-10, 113, 440, 563))
+         and suivi_essai.morceaux[1].x == 900 and suivi_essai.motifs.get(deplace) == "motif",
+         "fenêtre déplacée : ses textes la suivent", suivi_essai.morceaux)
+verifier(te.texte_exact("Leam", ["Learn"]) == "Learn" and te.texte_exact("Open Pr*ct", ["Open Project"]) == "Open Project"
+         and te.texte_exact("Settings", ["Paramètres avancés du compte"]) == "Settings",
+         "lettre mal lue : le nom exact de l'accessibilité est repris")
+# Capture d'écran (Impr. écran, Win+Maj+S) : l'outil Capture de Windows passe devant tout l'écran ; les traductions
+# ne doivent pas disparaître (elles disparaissaient de l'image).
+caches = []
+faux_capture = types.SimpleNamespace(suivi_en_cours=False, _capture_utilisateur_en_cours=lambda: True,
+                                     calque=types.SimpleNamespace(cacher_sous=caches.append))
+te.Application._cmd_cacher_sous(faux_capture, (0, 0, 2560, 1440))
+faux_capture._capture_utilisateur_en_cours = lambda: False
+te.Application._cmd_cacher_sous(faux_capture, (0, 0, 2560, 1440))
+verifier(caches == [(0, 0, 2560, 1440)], "capture d'écran : les traductions restent quand l'outil Capture passe devant")
+# Stream Discord regardé en écrivant dans le chat : la fenêtre est « périmée » (on vient de taper) mais la vidéo n'a
+# pas bougé ; son texte ne doit pas être traduit entre deux relectures (il clignotait).
+FENETRE = (0, 0, 2560, 1392)
+dans_la_video = te.Texte("Press start to continue", 600, 400, 300, 30, "texte", FENETRE, "discord.exe")
+hors_video = te.Texte("Please read the terms of use before buying.", 600, 1000, 500, 30, "texte", FENETRE, "discord.exe")
+releve = [(500, 300, 1500, 900, "", "image")]
+faux_lecteur = types.SimpleNamespace(vus=releve, a_relire=set(), vus_hors=lambda h: [] if h else releve, _a_traduire=lambda p: True,
+                                    _est_pseudo=lambda *a: False)
+faux_app = types.SimpleNamespace(textes_image=[dans_la_video, hors_video], memoire_fusion={}, suivi=None)
+lus = [t.texte for t in te.Application._fusionner(faux_app, faux_lecteur, {1234})]
+verifier(lus == [hors_video.texte], "texte d'une vidéo jamais traduit, même juste après une frappe", lus)
+# Champ de saisie : son texte d'aide est traduit tant qu'il est seul ; ce qu'on y écrit, jamais.
+champ = [(500, 300, 900, 340, "Search Projects...", "champ")]
+lecteur_champ = types.SimpleNamespace(vus=champ, a_relire=set(), vus_hors=lambda h: champ, _a_traduire=lambda p: True,
+                                      _est_pseudo=lambda *a: False)
+aide_seule = te.Texte("Search Projects...", 520, 310, 150, 18, "texte", FENETRE, "x.exe")
+ecrit = te.Texte("my secret project name", 520, 310, 170, 18, "texte", FENETRE, "x.exe")
+lus_aide = [t.texte for t in te.Application._fusionner(types.SimpleNamespace(
+    textes_image=[aide_seule], memoire_fusion={}, suivi=None), lecteur_champ)]
+lus_ecrit = [t.texte for t in te.Application._fusionner(types.SimpleNamespace(
+    textes_image=[ecrit], memoire_fusion={}, suivi=None), lecteur_champ)]
+verifier(lus_aide == ["Search Projects..."] and lus_ecrit == [],
+         "champ de saisie : texte d'aide traduit, ce qu'on écrit jamais", (lus_aide, lus_ecrit))
+verifier(te.mesurer("pour écrire dans le tampon de profondeur", 16, 100_000, 75)[0]
+         < 0.85 * te.mesurer("pour écrire dans le tampon de profondeur", 16, 100_000)[0],
+         "police étroite pour une traduction trop longue")
+mots = te.MesMots(["Mayo", "watch streak = série de visionnage", "# commentaire", ""])
+verifier(mots.texte_entier("mayo") is None and mots.texte_entier("Watch Streak") == "série de visionnage"
+         and mots.texte_entier("autre") is False, "Mes mots : texte entier")
+protege, codes = te.proteger_code("The Mayo avatar started a watch streak", mots)
+verifier(protege == "The [A] avatar started a [B]" and codes == ["Mayo", "série de visionnage"], "Mes mots : protégés dans la phrase",
+         (protege, codes))
+verifier(not te.ressemble_a_un_pseudo("🎁 Exclusive In-Game Bonus:", lambda: False)
+         and not te.ressemble_a_un_pseudo("🎃 LIMITED PET VARIANT: IN-GAME TREATS! 🎃", lambda: False)
+         and te.ressemble_a_un_pseudo("❤ ☁ BOSTON BAY ☁ ❤", lambda: False), "titre d'annonce avec émoji ≠ pseudo décoré")
+verifier(not te.ressemble_a_un_pseudo("Sale ends March 31st", lambda: False)
+         and not te.ressemble_a_un_pseudo("Starts at 4PM", lambda: False)
+         and te.ressemble_a_un_pseudo("Ninja2077", lambda: False) and te.ressemble_a_un_pseudo("xX_dark_Xx", lambda: False),
+         "« 31st », « 4PM » ne font pas passer une phrase pour un pseudo")
+verifier(not te.texte_de_page_a_traduire("npx skills add vercel-labs") and not te.texte_de_page_a_traduire("1.8K views")
+         and te.texte_de_page_a_traduire("Please read the terms of use."), "filtre des pages : code et nombres écartés")
+verifier(te.retoucher_francais("S'il vous plaît lire le manuel. Attention: prix à 16:00 sur https://a.b !")
+         == "Veuillez lire le manuel. Attention : prix à 16:00 sur https://a.b !"
+         and te.retoucher_francais("S'il vous plaît votre avis?") == "S'il vous plaît votre avis ?",
+         "retouches du français : « Veuillez », espaces avant « : ! ? »")
+verifier(all(bouton in (None, "Le dossier") and "://" not in texte for texte, bouton in te.guide_extension())
+         and "traduire_navigateurs" not in te.CONFIG_DEFAUT and "raccourci_copier" not in te.CONFIG_DEFAUT,
+         "étapes de l'extension sans lien ni bouton « Ouvrir » ; option des navigateurs retirée")
+verifier(te.libelle_du_glossaire("Add to Cart") == "Ajouter au panier" and te.libelle_du_glossaire("SIGN IN") == "SE CONNECTER"
+         and te.libelle_du_glossaire("Followers:") == "Abonnés :" and te.libelle_du_glossaire("Buy this hat") is None,
+         "glossaire des libellés d'interface")
+verifier(te.developper_argot("Sale ends March 31st") == "Sale ends March 31"
+         and te.developper_argot("the 2nd of May") == "the 2 May" and te.developper_argot("1st place") == "1st place",
+         "dates anglaises : « March 31st » -> « March 31 »")
+# Anti-scintillement : un texte relu un peu autrement au même endroit garde la traduction déjà affichée.
+Lu = types.SimpleNamespace
+ancien, nouveau = Lu(texte="Recently viewed items", x=10, y=10, l=200, h=20), Lu(texte="Recently viewed item", x=11, y=10, l=198, h=20)
+faux = Lu(cache={("Recently viewed items", "fr"): "Articles récemment consultés"})
+verifier(te.Application._traduction_voisine(nouveau, [ancien], faux, "fr") == "Articles récemment consultés"
+         and te.Application._traduction_voisine(Lu(texte="Settings", x=10, y=10, l=200, h=20), [ancien], faux, "fr") is None
+         and te.Application._traduction_voisine(Lu(texte="Recently viewed item", x=10, y=300, l=200, h=20), [ancien], faux,
+                                                "fr") is None, "anti-scintillement : traduction voisine gardée")
+
+# --------------------------------------------------------------------------- avec les vrais modèles
+print("Traductions (vrais modèles)")
+installees = te.langues_installees("fr")
+traducteur = te.Traducteur(installees)
+traducteur.prechauffer("fr")
+verifier(("en", "fr") in traducteur.modeles, "modèles anglais → français préchargés à l'activation")
+CAS = [
+    # (texte, ce qui doit apparaître dans la traduction, ce qui ne doit pas y être)
+    ("Please read the terms of use before buying this item.", ["conditions"], []),
+    ("You're authoring a skill rather than finding one — use the `skill-creator` skill", ["`skill-creator`"], ["⁇"]),
+    ("Environments without Node, since every command runs through `npx` — install manually instead", ["`npx`"], ["⁇"]),
+    ("idk tbh ngl that was kinda sus lol", ["Je ne sais pas"], []),
+    ("thx for the sub", ["abonnement"], []),
+]
+if "ja" in installees:
+    CAS.append(("アニメーションは、.zipファイル内のunitypackageに含まれています。", [".zip"], ["⁇"]))
+for texte, presents, absents in CAS:
+    traduit = traducteur.traduire([texte], "fr")[0] or ""
+    verifier(traduit and all(p in traduit for p in presents) and not any(a in traduit for a in absents),
+             "traduit : " + texte[:45], traduit)
+verifier(traducteur.traduire(["Unity"], "fr")[0] is None, "« Unity » seul n'est pas traduit")
+libelles = traducteur.traduire(["Add to cart", "Followers", "Mark as read", "Sign in", "Contact this shop"], "fr")
+verifier(libelles == ["Ajouter au panier", "Abonnés", "Marquer comme lu", "Se connecter", "Contacter cette boutique"],
+         "libellés courts bien traduits", libelles)
+traduit = traducteur.traduire(["Sale ends March 31st"], "fr", filtre=te.texte_de_page_a_traduire)[0] or ""
+verifier("31 mars" in traduit and "31st" not in traduit, "date avec « 31st » traduite (aussi dans les pages)", traduit)
+traduit = traducteur.traduire([recolles[0][4]], "fr")[0] or ""
+verifier("_CameraDepthTexture" in traduit and "UNITY_Z_0_FAR_FROM_CLIPSPACE" in traduit and M not in traduit
+         and "profondeur" in traduit, "phrase recollée traduite, code intact", traduit)
+date = "Limited Time: Pre-orders close on Saturday, October 31st, 2026 at 16:00 (4 PM CEST)!"
+traduit = traducteur.traduire([date], "fr")[0] or ""
+verifier(traduit and "2026" in traduit and "16:00" in traduit, "phrase avec date et heure traduite (nombres gardés)", traduit)
+
+avec_mots = te.Traducteur(installees, ["Mayo", "watch streak = série de visionnage"])
+traduit = avec_mots.traduire(["The Mayo avatar is really beautiful and easy to use."], "fr")[0] or ""
+verifier("Mayo" in traduit and "avatar" in traduit.lower(), "Mes mots : mot gardé dans la traduction", traduit)
+traduit = avec_mots.traduire(["mattye_west watched 7 consecutive streams and sparked a watch streak!"], "fr")[0] or ""
+verifier("série de visionnage" in traduit, "Mes mots : traduction imposée", traduit)
+verifier(avec_mots.traduire(["Watch streak"], "fr")[0] == "série de visionnage", "Mes mots : libellé seul")
+
+if ("fr", "en") in te.paires_installees():
+    ecrit = traducteur.traduire_ecrit("Salut, tu veux jouer avec nous ce soir ?\nJe lance le monde à 21h.", "fr", "en") or ""
+    verifier("tonight" in ecrit.lower() and "\n" in ecrit and "21" in ecrit, "Ctrl+Alt+Entrée : écrit en français → anglais", ecrit)
+    verifier(traducteur.deja_en("Hey, do you want to play with us tonight?", "en")
+             and not traducteur.deja_en("Salut, tu veux jouer avec nous ce soir ?", "en"), "Ctrl+Alt+Entrée : déjà en anglais")
+verifier(te.touches_du_raccourci(te.RACCOURCIS["ecrire"][1]) == (3, 0x0D), "Ctrl+Alt+Entrée lu pour Windows")
+
+# Bloc de boutique : japonais, anglais et numéros de version mêlés, sur plusieurs lignes (BOOTH).
+bloc = ("作成環境:Unity3D 2022.3.22f1 Adobe Photoshop 2025 Visual Studio 2026\n\n"
+        "A total of two groups of dynamic expressions, local expression UI display.\n"
+        "Supports customized stacking of face shape keys. Expression can be paused and continued.\n\n"
+        "The product does not include the 3D model.\nPlease purchase it yourself.")
+if "ja" in installees:
+    bloc = "頬を指でつついたり引っ張ったりするインタラクション表現、口を開ける表現。\n" + bloc
+traduit = traducteur.traduire([bloc], "fr")[0] or ""
+lignes, lignes_traduites = bloc.split("\n"), traduit.split("\n")
+verifier(len(lignes) == len(lignes_traduites), "bloc multiligne : toutes les lignes gardées", traduit[:200])
+verifier("achet" in traduit.lower() and "two groups" not in traduit, "bloc multiligne : l'anglais est traduit", traduit[-300:])
+verifier("2022.3.22f1" in traduit, "bloc multiligne : la ligne de versions reste intacte")
+filtre_page = traducteur.traduire([bloc], "fr", filtre=te.texte_de_page_a_traduire)[0]
+verifier(filtre_page == traduit, "bloc multiligne : même résultat pour l'extension")
+long = " ".join(["This feature was added in version 2.0 of the software."] * 2 + ["It works with every avatar you own."] * 5)
+verifier(traducteur.traduire([long], "fr")[0] is not None, "long paragraphe : une phrase ratée ne bloque pas les autres")
+
+# --------------------------------------------------------------------------- bandeaux, de bout en bout
+# Une fausse fenêtre d'appli (fond sombre, bouton coloré en gras, dates) passe par toute la chaîne : lecture de
+# l'image, fusion, traduction, mise en page. Chaque traduction doit couvrir exactement son texte, avec la même
+# graisse ; un fond qui bouge derrière (vidéo, fenêtre translucide) ne doit rien faire relire ni bouger.
+print("Bandeaux (de bout en bout)")
+
+
+def fausse_fenetre(decalage_fond=0):
+    image = Image.new("RGB", (900, 260), (37, 37, 37))
+    d = ImageDraw.Draw(image)
+    for x in range(0, 900, 6):  # un fond légèrement texturé qui peut « bouger » (vidéo vue à travers)
+        d.line((x + decalage_fond % 6, 0, x + decalage_fond % 6, 8), fill=(42, 42, 44))
+    for i, y in enumerate((60, 120, 180)):
+        d.rounded_rectangle((720, y, 836, y + 33), 3, fill=(23, 145, 168))
+        d.text((778, y + 16), "Open Project", font=ImageFont.truetype("segoeuib.ttf", 15), fill="white", anchor="mm")
+        d.text((560, y + 16), "a month ago", font=ImageFont.truetype("segoeui.ttf", 15), fill=(220, 220, 220), anchor="lm")
+    d.text((40, 76), "Settings", font=ImageFont.truetype("segoeui.ttf", 16), fill=(230, 230, 230), anchor="lm")
+    return np.ascontiguousarray(np.dstack([np.asarray(image)[..., ::-1], np.full((260, 900), 255, np.uint8)]))
+
+
+image_courante = [fausse_fenetre()]
+suivi_bout = te.SuiviEcran(lambda: (image_courante[0], (0, 0)))
+suivi_bout.mouvement_recent = lambda: False
+suivi_bout.analyser()
+lecteur_vide = types.SimpleNamespace(vus=[], a_relire=set(), vus_hors=lambda h: [], _a_traduire=lambda p: True,
+                                     _est_pseudo=lambda *a: False)
+app_bout = types.SimpleNamespace(textes_image=list(suivi_bout.morceaux), memoire_fusion={}, suivi=suivi_bout)
+textes_bout = te.Application._fusionner(app_bout, lecteur_vide)
+traducteur.traduire([t.texte for t in textes_bout], "fr")
+calque_essai = te.Calque.__new__(te.Calque)
+calque_essai.style, calque_essai.facteur_taille = "auto", 1.0
+mauvais, boutons_gras = [], 0
+for t in textes_bout:
+    traduction_bout = traducteur.cache.get((t.texte, "fr"))
+    if not traduction_bout:
+        continue
+    teintes = te.couleurs_autour(image_courante[0], (0, 0), t)
+    d = calque_essai._disposer(t, traduction_bout, teintes, textes_bout, ())
+    if d is None or not (d[2] <= t.x and d[3] <= t.y and d[2] + d[4] >= t.x + t.l and d[3] + d[5] >= t.y + t.h):
+        mauvais.append((t.texte, (t.x, t.y, t.l, t.h), d and d[2:6]))
+    boutons_gras += bool(t.texte == "Open Project" and d and d[-1])
+lus_bout = sorted(t.texte for t in textes_bout)
+verifier(lus_bout.count("Open Project") == 3 and lus_bout.count("a month ago") == 3 and "Settings" in lus_bout
+         and not mauvais and boutons_gras == 3,
+         "fausse appli : tout lu, chaque traduction couvre son texte, boutons en gras", (lus_bout, mauvais, boutons_gras))
+avant_fond = set(suivi_bout.morceaux)
+image_courante[0] = fausse_fenetre(decalage_fond=3)
+suivi_bout.analyser()
+suivi_bout.analyser()
+verifier(set(suivi_bout.morceaux) == avant_fond, "fond qui bouge derrière : rien n'est relu ni déplacé")
+
+# --------------------------------------------------------------------------- serveur de l'extension
+print("Serveur de l'extension")
+te.PORT_EXTENSION = 47199  # (le vrai programme peut tourner sur le port habituel)
+app = types.SimpleNamespace(actif=True, config={"langue_cible": "fr"}, traducteur=traducteur, commandes=types.SimpleNamespace(put=lambda c: None))
+app.extension_vue = lambda agent: None
+app.etat_extension = lambda agent: te.Application.etat_extension(app, agent)
+app.traduire_pour_extension = lambda textes, agent: te.Application.traduire_pour_extension(app, textes, agent)
+serveur = te.ThreadingHTTPServer(("127.0.0.1", te.PORT_EXTENSION), te.RequeteExtension)
+serveur.app = app
+threading.Thread(target=serveur.serve_forever, daemon=True).start()
+
+
+def demande(methode, chemin, corps=None, entetes=None):
+    connexion = http.client.HTTPConnection("127.0.0.1", te.PORT_EXTENSION, timeout=120)
+    connexion.request(methode, chemin, body=corps, headers=entetes or {})
+    reponse = connexion.getresponse()
+    return reponse.status, reponse.read().decode("utf-8")
+
+
+EXT = {"X-Traducteur-Ecran": "1", "Content-Type": "application/json"}
+code, corps = demande("GET", "/etat", entetes=EXT)
+etat = json.loads(corps) if code == 200 else {}
+verifier(code == 200 and {"actif", "langue", "version", "extension"} <= set(etat), "/etat complet", corps)
+verifier(demande("GET", "/etat")[0] == 403, "sans l'en-tête de l'extension : refusé")
+verifier(demande("GET", "/etat", entetes={**EXT, "Host": "site.com"})[0] == 403, "autre adresse : refusé")
+verifier(demande("OPTIONS", "/traduire", entetes={"Origin": "https://site.com"})[0] == 501, "page web : refusée")
+verifier(demande("POST", "/reglage", json.dumps({"langue": "xx"}), EXT)[0] == 400, "réglage invalide : refusé")
+code, corps = demande("POST", "/traduire", json.dumps({"textes": [bloc, "Sign in", "SQUEEZIE"]}), EXT)
+traductions = json.loads(corps).get("traductions", []) if code == 200 else []
+verifier(code == 200 and traductions[:1] == [traduit] and traductions[2] is None, "/traduire : bloc traduit, pseudo laissé", corps[:200])
+serveur.shutdown()
+
+# --------------------------------------------------------------------------- extension
+print("Extension")
+dossier = os.path.join(ICI, "extension")
+for fichier in ("page.js", "fond.js", "fenetre.js"):
+    resultat = subprocess.run(["node", "--check", os.path.join(dossier, fichier)], capture_output=True, text=True)
+    verifier(resultat.returncode == 0, "syntaxe de " + fichier, resultat.stderr[-200:])
+with open(os.path.join(dossier, "manifest.json"), encoding="utf-8") as f:
+    manifeste = json.load(f)
+verifier(manifeste.get("version") == etat.get("extension"), "le programme connaît la version de l'extension")
+verifier({"storage", "alarms"} <= set(manifeste.get("permissions", [])), "permissions de l'extension")
+with open(os.path.join(dossier, "page.js"), encoding="utf-8") as f:
+    page = f.read()
+verifier("whiteSpace" in page and "< 20000" in page, "page.js garde les retours à la ligne et accepte les longs textes")
+
+print()
+print("TOUT EST BON" if not echecs else f"{len(echecs)} ÉCHEC(S) : " + " ; ".join(echecs))
+sys.exit(1 if echecs else 0)
