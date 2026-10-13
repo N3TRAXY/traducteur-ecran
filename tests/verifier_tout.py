@@ -376,6 +376,13 @@ for texte, presents, absents in CAS:
     verifier(traduit and all(p in traduit for p in presents) and not any(a in traduit for a in absents),
              "traduit : " + texte[:45], traduit)
 verifier(traducteur.traduire(["Unity"], "fr")[0] is None, "« Unity » seul n'est pas traduit")
+# Un pseudo en minuscules (profil VRChat) devenait « C'est pourquoi je vous prie de bien vouloir me faire confiance. »
+verifier(te.ressemble_a_un_pseudo("thithis", lambda: False) and not te.ressemble_a_un_pseudo("settings", lambda: False)
+         and traducteur.traduire(["thithis"], "fr")[0] is None
+         and traducteur.traduire(["thithis"], "fr", filtre=te.texte_de_page_a_traduire)[0] is None
+         and traducteur.traduire(["settings"], "fr")[0] not in (None, "settings"),
+         "pseudo en minuscules jamais traduit (ni inventé), vrai mot en minuscules traduit",
+         traducteur.traduire(["thithis", "settings"], "fr"))
 libelles = traducteur.traduire(["Add to cart", "Followers", "Mark as read", "Sign in", "Contact this shop"], "fr")
 verifier(libelles == ["Ajouter au panier", "Abonnés", "Marquer comme lu", "Se connecter", "Contacter cette boutique"],
          "libellés courts bien traduits", libelles)

@@ -1145,7 +1145,9 @@ def ressemble_a_un_pseudo(texte, photo_a_cote):
         if len(texte) >= 3 and texte.isupper():
             return not est_un_vrai_mot(texte)  # NETRA (pseudo) / AUTHOR (libellé)
         if not texte[0].isupper():
-            return False
+            # « thithis » : un mot en minuscules qui n'existe dans aucune langue, c'est un pseudo (le modèle en
+            # faisait « C'est pourquoi je vous prie de bien vouloir me faire confiance. »).
+            return len(texte) >= 3 and texte.isalpha() and not est_un_vrai_mot(texte)
         # Un mot avec majuscule qui n'est pas un mot courant (« Amixem ») : un nom.
         # « Cloudy », « Aries » sont de vrais mots : pseudo seulement à côté d'une photo de profil.
         return not est_un_vrai_mot(texte) or photo_a_cote()
@@ -3057,7 +3059,7 @@ class Traducteur:
     CONFIANCE_DEJA_TRADUIT = 0.35  # le texte ressemble déjà assez à la langue voulue
 
     MOTS_PHRASE = 2  # à partir de ce nombre de mots, un texte va au grand modèle s'il existe
-    VERSION_CACHE = 6  # à changer quand les modèles changent : les anciennes traductions sont oubliées
+    VERSION_CACHE = 7  # à changer quand les modèles changent : les anciennes traductions sont oubliées
 
     def __init__(self, langues=(), mots=()):
         self.detecteur = DetecteurLangue()
@@ -3302,6 +3304,9 @@ class Traducteur:
             for texte, traduit in zip(lot, resultats):
                 if traduit and not memes_chiffres(texte, traduit):
                     traduit = None  # la traduction a changé un nombre : on garde le texte d'origine
+                if traduit and len(texte.split()) == 1 and not CJK.search(texte) and len(traduit.split()) > 4:
+                    log.info("Traduction inventée écartée : %s -> %s", texte[:40], traduit[:80])
+                    traduit = None  # un seul mot devenu toute une phrase : le modèle a inventé
                 if traduit and traduction_aberrante(traduit):
                     log.info("Traduction aberrante écartée : %s", traduit[:80])
                     traduit = None  # le modèle s'est emballé : mieux vaut le texte d'origine
