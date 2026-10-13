@@ -63,8 +63,8 @@ verifier(all(te.CONFIG_DEFAUT[cle] == defaut for cle, defaut, _ in te.RACCOURCIS
 verifier(te.numero_de_version("v2.10.1") > te.numero_de_version("2.9.9") == (2, 9, 9)
          and te.numero_de_version(te.VERSION_PROGRAMME) >= (2, 0, 0),
          "versions comparées dans le bon ordre (2.10 après 2.9)")
-verifier(te.grands_modeles_manquants({("ja", "en")}) == [] and (te.DEPOT_GITHUB or te.derniere_version() is None),
-         "grand modèle demandé seulement pour l'anglais → français ; sans dépôt, pas de recherche de mise à jour")
+verifier(te.grands_modeles_manquants({("de", "en")}) == [] and (te.DEPOT_GITHUB or te.derniere_version() is None),
+         "grand modèle demandé seulement pour les langues qui en ont un ; sans dépôt, pas de recherche de mise à jour")
 # Le menu de l'icône est construit par un autre fil dès sa création : tout ce qu'il lit doit déjà exister
 # (« mise_a_jour » créé après l'icône faisait planter le menu au lancement de l'exe).
 import inspect
@@ -255,6 +255,106 @@ verifier(te.Application._traduction_voisine(nouveau, [ancien], faux, "fr") == "A
          and te.Application._traduction_voisine(Lu(texte="Recently viewed item", x=10, y=300, l=200, h=20), [ancien], faux,
                                                 "fr") is None, "anti-scintillement : traduction voisine gardée")
 
+# --------------------------------------------------------------------------- nouveautés 2.1 (sans vrais modèles)
+print("Carte graphique, grands modèles, zone, historique")
+import collections
+import pathlib
+import time
+# Carte graphique : un essai qui ne répond pas (la RTX 5070 Ti « bloquait » plus de 5 min) laisse tout sur le processeur ;
+# un essai réussi passe les traductions sur la carte ; un modèle qui n'y tient pas se charge sur le processeur.
+sauves = (te.carte_nvidia, te.preparer_carte_graphique, te.ctranslate2, te.argos)
+te.carte_nvidia, te.preparer_carte_graphique = (lambda: True), (lambda: True)
+te.argos = types.SimpleNamespace(get_installed_packages=lambda: [types.SimpleNamespace(package_path=pathlib.Path("x"))])
+essai_gpu = te.Traducteur.__new__(te.Traducteur)
+essai_gpu.appareil, essai_gpu.modeles, essai_gpu.grands, essai_gpu.verrou = "cpu", {}, {}, threading.RLock()
+te.ctranslate2 = types.SimpleNamespace(Translator=lambda *a, **k: time.sleep(3))
+etat_bloque = essai_gpu.essayer_carte_graphique(delai=0.3)
+faux_modele = types.SimpleNamespace(translate_batch=lambda *a, **k: [])
+te.ctranslate2 = types.SimpleNamespace(Translator=lambda *a, **k: faux_modele)
+etat_marche = essai_gpu.essayer_carte_graphique(delai=2)
+
+
+def charger(chemin, device, **k):
+    if device == "cuda":
+        raise RuntimeError("CUDA out of memory")
+    return "sur le processeur"
+
+
+te.ctranslate2 = types.SimpleNamespace(Translator=charger)
+repli = essai_gpu._creer("x")
+te.carte_nvidia, te.preparer_carte_graphique, te.ctranslate2, te.argos = sauves
+verifier(etat_bloque.startswith("Inutilisable") and etat_marche == "Active" and essai_gpu.appareil == "cuda"
+         and repli == "sur le processeur", "carte graphique : bloquée → processeur, qui marche → carte, pleine → processeur",
+         (etat_bloque, etat_marche, repli))
+# Grands modèles : un même modèle (espagnol, portugais, italien) téléchargé une fois ; le jeton de la langue voulue en tête ;
+# une paire directe sans modèle habituel traduit tout au grand modèle ; le chinois compte ses caractères comme des mots.
+manquants = te.grands_modeles_manquants({("es", "fr"), ("pt", "fr"), ("it", "fr")})
+verifier(manquants.count("itc_itc") <= 1 and te.GRANDS_MODELES[("es", "fr")] in te.MODELES_MULTI_CIBLES,
+         "grand modèle partagé par trois langues : téléchargé une fois", manquants)
+recus = []
+faux_decoupeur = types.SimpleNamespace(encode=lambda t, out_type=str: t.split(), decode=lambda jetons: " ".join(jetons))
+faux_grand = types.SimpleNamespace(translate_batch=lambda sources, **k: recus.extend(sources) or [
+    types.SimpleNamespace(hypotheses=[["traduit"]]) for _ in sources])
+essai_grand = te.Traducteur.__new__(te.Traducteur)
+essai_grand.grands = {("es", "fr"): (faux_grand, faux_decoupeur, faux_decoupeur),
+                      ("zh", "en"): (faux_grand, faux_decoupeur, faux_decoupeur)}
+essai_grand.installees = {("es", "en"), ("en", "fr"), ("zh", "en")}
+sortie = essai_grand._traduire_lot(["Hola"], "es", "fr") + essai_grand._traduire_lot(["保存更改"], "zh", "en")
+verifier(sortie == ["traduit", "traduit"] and recus[0] == [">>fra<<", "Hola"] and recus[1] == ["保存更改"]
+         and essai_grand._chemin("es", "fr") == [("es", "fr")] and essai_grand._chemin("zh", "fr") == [("zh", "en"), ("en", "fr")],
+         "grands modèles : jeton >>fra<<, mot seul au modèle direct, chinois sans espaces, chemin direct", (sortie, recus))
+verifier(("ja", "en") not in te.GRANDS_MODELES and ("ko", "en") not in te.GRANDS_MODELES,
+         "japonais et coréen : pas de grand modèle (ceux essayés inventaient sur les pages de boutique)")
+# Zone choisie : seulement ce qui est dedans, même le texte d'une image (on l'a choisie exprès).
+FEN = (0, 0, 1200, 800)
+dans_image = te.Texte("Limited edition", 100, 100, 120, 20, "morceau", FEN, "opera.exe")
+hors_zone = te.Texte("Account settings", 700, 600, 140, 20, "morceau", FEN, "opera.exe")
+lecteur_image = types.SimpleNamespace(vus=[(50, 50, 400, 300, "", "image")], a_relire=set(),
+                                      vus_hors=lambda h: lecteur_image.vus, _a_traduire=lambda p: False,
+                                      _est_pseudo=lambda *a: False)
+app_zone = types.SimpleNamespace(textes_image=[dans_image, hors_zone], memoire_fusion={}, suivi=None,
+                                 zone_choisie=(40, 40, 500, 400))
+app_zone._dans_zone = lambda t: te.Application._dans_zone(app_zone, t)
+lus_zone = [t.texte for t in te.Application._fusionner(app_zone, lecteur_image)]
+app_zone.zone_choisie = None
+lus_sans = [t.texte for t in te.Application._fusionner(app_zone, lecteur_image)]
+verifier(lus_zone == ["Limited edition"] and lus_sans == [],
+         "zone choisie : son texte lu même dans une image et un programme exclu, rien d'autre", (lus_zone, lus_sans))
+choisies = []
+selecteur = te.SelecteurZone.__new__(te.SelecteurZone)
+selecteur.fini, selecteur.win = choisies.append, types.SimpleNamespace(destroy=lambda: None)
+selecteur.depart = ((300, 200), (300, 200))
+selecteur._fin(types.SimpleNamespace(x_root=100, y_root=260))
+selecteur.depart = ((300, 200), (300, 200))
+selecteur._fin(types.SimpleNamespace(x_root=304, y_root=203))  # un simple clic
+verifier(choisies == [(100, 200, 300, 260), None], "zone : rectangle tracé dans tous les sens, simple clic annulé", choisies)
+# Historique : une traduction restée à l'écran n'est notée qu'une fois ; ce qu'on écrit (Ctrl+Alt+Entrée) aussi.
+app_histo = types.SimpleNamespace(historique=collections.deque(maxlen=300), _historique_vu={})
+for _ in range(3):
+    te.Application._noter_historique(app_histo, [(dans_image, "Édition limitée")])
+te.Application._noter_historique(app_histo, [("Salut", "Hi")])
+verifier([h[1:] for h in app_histo.historique] == [("Limited edition", "Édition limitée"), ("Salut", "Hi")],
+         "historique : chaque traduction une fois", list(app_histo.historique))
+# Vitres : au plus RESERVE_MAX gardées en réserve, les autres détruites (une grosse page en laissait des centaines).
+calque_reserve = te.Calque.__new__(te.Calque)
+detruites = []
+calque_reserve.libres = [object()] * te.Calque.RESERVE_MAX
+calque_reserve.hwnds = (1, 2, 3)
+calque_reserve._rendre(types.SimpleNamespace(hwnd=2, cacher=lambda: None,
+                                             win=types.SimpleNamespace(destroy=lambda: detruites.append(2))))
+verifier(detruites == [2] and calque_reserve.hwnds == (1, 3) and len(calque_reserve.libres) == te.Calque.RESERVE_MAX,
+         "vitres en réserve limitées : la vitre en trop est détruite")
+# Signaler un problème : la page GitHub préremplie ne contient rien de personnel (ni nom d'utilisateur, ni chemin).
+ouvertes = []
+sauves_os = (te.os.startfile, te.subprocess.Popen, te.APP_DIR)
+te.os.startfile, te.subprocess.Popen, te.APP_DIR = ouvertes.append, (lambda *a, **k: None), tempfile.mkdtemp()
+te.Application.signaler_probleme(types.SimpleNamespace(etat_carte="Active"))
+te.os.startfile, te.subprocess.Popen, te.APP_DIR = sauves_os
+lien = ouvertes[0] if ouvertes else ""
+verifier(lien.startswith(f"https://github.com/{te.DEPOT_GITHUB}/issues/new?") and os.environ["USERNAME"] not in lien
+         and "Users" not in lien, "signaler un problème : page GitHub préremplie, rien de personnel", lien[:120])
+verifier(te.jeu_plein_ecran() in (True, False), "plein écran exclusif : Windows répond")
+
 # --------------------------------------------------------------------------- avec les vrais modèles
 print("Traductions (vrais modèles)")
 installees = te.langues_installees("fr")
@@ -318,6 +418,17 @@ filtre_page = traducteur.traduire([bloc], "fr", filtre=te.texte_de_page_a_tradui
 verifier(filtre_page == traduit, "bloc multiligne : même résultat pour l'extension")
 long = " ".join(["This feature was added in version 2.0 of the software."] * 2 + ["It works with every avatar you own."] * 5)
 verifier(traducteur.traduire([long], "fr")[0] is not None, "long paragraphe : une phrase ratée ne bloque pas les autres")
+# Un texte en plusieurs morceaux dont une langue est en échec passager (réessayée 30 s plus tard) : pas mémorisé comme
+# « rien à traduire », sinon il le restait pour de bon.
+if "ja" in installees:
+    melange = "Please read the terms of use.\n今日はとても良い天気ですね。一緒に散歩しませんか。"
+    traducteur.echecs[("ja", "fr")] = time.monotonic()
+    traducteur.traduire([melange], "fr")
+    memorise_en_echec = (melange, "fr") in traducteur.cache
+    traducteur.echecs.clear()
+    traduit_melange = traducteur.traduire([melange], "fr")[0] or ""
+    verifier(not memorise_en_echec and "conditions" in traduit_melange and "今日" not in traduit_melange,
+             "texte en morceaux : un échec passager n'est pas mémorisé, retraduit ensuite", traduit_melange)
 
 # --------------------------------------------------------------------------- bandeaux, de bout en bout
 # Une fausse fenêtre d'appli (fond sombre, bouton coloré en gras, dates) passe par toute la chaîne : lecture de
@@ -400,6 +511,10 @@ verifier(demande("POST", "/reglage", json.dumps({"langue": "xx"}), EXT)[0] == 40
 code, corps = demande("POST", "/traduire", json.dumps({"textes": [bloc, "Sign in", "SQUEEZIE"]}), EXT)
 traductions = json.loads(corps).get("traductions", []) if code == 200 else []
 verifier(code == 200 and traductions[:1] == [traduit] and traductions[2] is None, "/traduire : bloc traduit, pseudo laissé", corps[:200])
+app.zone_temporaire = True  # zone choisie pendant la pause : les pages web restent comme elles sont
+pause_zone = json.loads(demande("GET", "/etat", entetes=EXT)[1]).get("actif")
+app.zone_temporaire = False
+verifier(pause_zone is False, "zone choisie pendant la pause : l'extension reste en pause")
 serveur.shutdown()
 
 # --------------------------------------------------------------------------- extension
@@ -416,6 +531,10 @@ verifier({"storage", "alarms"} <= set(manifeste.get("permissions", [])), "permis
 # ajouté à sa copie de l'extension par construire_exe.bat.
 with open(os.path.join(ICI, "construire_exe.bat"), encoding="utf-8") as f:
     construction = f.read()
+with open(os.path.join(dossier, "fond.js"), encoding="utf-8") as f:
+    fond = f.read()
+verifier('installType === "development"' in fond and "enDeveloppement &&" in fond,
+         "extension installée depuis une boutique : jamais de « ↻ » (elle se met à jour toute seule)")
 verifier(set(manifeste.get("background", {})) == {"service_worker"}
          and "m['background']={'scripts': ['fond.js']}" in construction,
          "extension : pas d'erreur « background.scripts » dans Chrome et Opera, Firefox a ses « scripts »")

@@ -1,6 +1,7 @@
 # Fichiers fabriqués (publiés dans les « Releases », pas dans le code)
 TraducteurEcran-Windows.zip
 TraducteurEcran-Installation.exe
+TraducteurEcran-extension-*.zip
 *.exe
 build/
 dist/

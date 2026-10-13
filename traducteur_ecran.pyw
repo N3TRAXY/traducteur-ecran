@@ -12,9 +12,11 @@ bouts de code et le texte des images et vidéos sont laissés tels quels.
 
 import asyncio
 import bisect
+import collections
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 import ctypes
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +40,7 @@ import tkinter as tk
 import unicodedata
 import shutil
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from tkinter import filedialog
@@ -82,8 +85,28 @@ EST_EXE = getattr(sys, "frozen", False)  # version .exe (PyInstaller)
 # Grands modèles de traduction (OPUS-MT « transformer-big », convertis pour CTranslate2), bien
 # meilleurs sur les phrases que ceux d'Argos : cherchés à côté du programme (version .exe), puis
 # dans le dossier des réglages.
-GRANDS_MODELES = {("en", "fr"): "en_fr"}
-VERSION_PROGRAMME = "2.0.0"
+# Chacun gardé après comparaison avec la traduction d'Argos, sur des phrases d'interface, de discussion et de
+# boutique (VRChat, BOOTH : « Modular Avatar », « README.txt », « version Quest ») : celle-ci inventait parfois
+# (polonais, chinois : « Impossible de fermer le dossier temporaire : %s ») ou coupait des phrases (italien).
+# Écartés : japonais (opus-mt-ja-en) et coréen (opus-mt-ko-en), pires sur les phrases de boutique (« (Rires) »,
+# « lire le médicament avant de l'acheter ») ; tc-big-ko-en ne connaît pas le hangeul.
+GRANDS_MODELES = {
+    ("en", "fr"): "en_fr",
+    # Directement vers le français (sans passer par l'anglais).
+    ("es", "fr"): "itc_itc", ("pt", "fr"): "itc_itc", ("it", "fr"): "itc_itc",  # opus-mt-tc-big-itc-itc
+    ("ru", "fr"): "zle_fr", ("uk", "fr"): "zle_fr",  # opus-mt-tc-big-zle-fr
+    # Vers l'anglais : la première étape (le grand modèle anglais -> français fait la seconde).
+    ("pl", "en"): "zlw_en",  # opus-mt-tc-big-zlw-en
+    ("zh", "en"): "zhx_en",  # opus-mt-tc-bible-big-zhx-en
+}
+# Modèles qui traduisent vers plusieurs langues : la langue voulue est indiquée par un jeton en tête du texte.
+JETONS_CIBLE = {"fr": ">>fra<<", "es": ">>spa<<", "pt": ">>por<<", "it": ">>ita<<", "ro": ">>ron<<"}
+MODELES_MULTI_CIBLES = {"itc_itc"}
+# Carte graphique NVIDIA : sa bibliothèque de calcul (cuBLAS) est téléchargée à part, seulement si elle sert.
+DOSSIER_GPU = os.path.join(APP_DIR, "carte_graphique")
+FICHIERS_GPU = ("cublas64_12.dll", "cublasLt64_12.dll")
+CUBLAS = ("nvidia-cublas-cu12", "12.9.2.10")  # (paquet publié par NVIDIA sur PyPI ; version figée, vérifiée)
+VERSION_PROGRAMME = "2.1.0"
 # Dépôt GitHub (« compte/dépôt ») où sont publiées les versions (mises à jour) et les grands modèles. Vide :
 # ni mise à jour automatique, ni grand modèle téléchargé (celui-ci peut alors être livré à côté du programme).
 DEPOT_GITHUB = "N3TRAXY/traducteur-ecran"
@@ -163,6 +186,7 @@ CONFIG_DEFAUT = {
     "reactivite": "normale",  # voir REACTIVITES
     "langue_ecriture": "en",  # Ctrl+Alt+Entrée : ce qu'on écrit est traduit dans cette langue
     "mots": [],  # « Mes mots » : un mot jamais traduit, ou « mot = traduction imposée », par ligne
+    "carte_graphique": True,  # traduire sur la carte graphique NVIDIA s'il y en a une (~10 fois plus vite)
 }
 # Raccourcis clavier, tous changeables (rubrique « Options ») : action -> (clé des réglages, par défaut, rôle).
 # Une combinaison vide : aucun raccourci pour cette action.
@@ -171,11 +195,12 @@ RACCOURCIS = {
     "ecrire": ("raccourci_ecrire", "ctrl+alt+enter", "Traduire ton message"),  # (pas Ctrl+Alt+E : AltGr+E, « € »)
     # Ctrl+C : toute copie d'un texte traduit. (Pas « raccourci_copier » : une ancienne version y a laissé Ctrl+Alt+C.)
     "copier": ("raccourci_copie", "ctrl+c", "Copier la traduction"),
+    "zone": ("raccourci_zone", "ctrl+alt+z", "Traduire une zone choisie"),
     "capture": ("raccourci_capture", "print screen", "Capture d'écran"),
     "capture_zone": ("raccourci_capture_zone", "windows+shift+s", "Capture d'une zone"),
 }
 CONFIG_DEFAUT.update({cle: defaut for cle, defaut, _ in RACCOURCIS.values()})
-IDS_RACCOURCIS = {"pause": 1, "ecrire": 2, "copier": 3}  # raccourcis de Windows (RegisterHotKey)
+IDS_RACCOURCIS = {"pause": 1, "ecrire": 2, "copier": 3, "zone": 4}  # raccourcis de Windows (RegisterHotKey)
 CAPTURES = ("capture", "capture_zone")  # touches seulement guettées : la capture est faite par Windows
 # Noms des touches sur les touches dessinées (« print screen » -> « Impr. écran »).
 NOMS_TOUCHES = {"ctrl": "Ctrl", "alt": "Alt", "alt gr": "AltGr", "shift": "Maj", "maj": "Maj", "windows": "Win",
@@ -968,6 +993,12 @@ def _rect_fenetre(hwnd):
     if dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect)):
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
     return rect.left, rect.top, rect.right, rect.bottom
+
+
+def jeu_plein_ecran():
+    """Une application Direct3D (un jeu) est-elle en plein écran exclusif ? (QUNS_RUNNING_D3D_FULL_SCREEN)"""
+    etat = ctypes.c_int(0)
+    return ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(etat)) == 0 and etat.value == 3
 
 
 def fenetre_au_point(x, y):
@@ -2799,9 +2830,10 @@ def langues_installees(cible):
 
 
 def grands_modeles_manquants(paires):
-    """Noms des grands modèles utiles à ces paires de langues et absents (téléchargeables depuis GitHub)."""
-    return [GRANDS_MODELES[p] for p in sorted(paires) if p in GRANDS_MODELES and not any(
-        os.path.exists(os.path.join(d, GRANDS_MODELES[p], "model.bin")) for d in DOSSIERS_MODELES)]
+    """Noms des grands modèles utiles à ces paires de langues et absents (téléchargeables depuis GitHub), chacun
+    une fois (un même modèle sert à plusieurs langues : espagnol, portugais, italien)."""
+    return list(dict.fromkeys(GRANDS_MODELES[p] for p in sorted(paires) if p in GRANDS_MODELES and not any(
+        os.path.exists(os.path.join(d, GRANDS_MODELES[p], "model.bin")) for d in DOSSIERS_MODELES)))
 
 
 def installer_grand_modele(nom, progression, annule):
@@ -2830,6 +2862,70 @@ def installer_grand_modele(nom, progression, annule):
         shutil.rmtree(dossier, ignore_errors=True)
         os.replace(provisoire, dossier)
         log.info("Grand modèle %s installé", nom)
+        return True
+    finally:
+        try:
+            os.remove(chemin)
+        except OSError:
+            pass
+
+
+def carte_nvidia():
+    """Une carte graphique NVIDIA (et son pilote) est-elle là ? Elle traduit ~10 fois plus vite que le processeur."""
+    try:
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:  # (pas de pilote NVIDIA)
+        return False
+
+
+def bibliotheque_gpu_presente():
+    return all(os.path.exists(os.path.join(DOSSIER_GPU, f)) for f in FICHIERS_GPU)
+
+
+def preparer_carte_graphique():
+    """Rend la bibliothèque de calcul de NVIDIA (téléchargée à part) trouvable par CTranslate2. True si elle est là."""
+    if not bibliotheque_gpu_presente():
+        return False
+    if DOSSIER_GPU not in os.environ.get("PATH", ""):
+        os.add_dll_directory(DOSSIER_GPU)
+        os.environ["PATH"] = DOSSIER_GPU + os.pathsep + os.environ.get("PATH", "")
+    return True
+
+
+def installer_bibliotheque_gpu(progression, annule):
+    """Télécharge la bibliothèque de calcul de NVIDIA (cuBLAS, ~530 Mo, depuis PyPI où NVIDIA la publie), vérifiée,
+    et n'en garde que les deux fichiers utiles. Seulement s'il y a une carte NVIDIA. False si annulé."""
+    nom, version = CUBLAS
+    requete = urllib.request.Request(f"https://pypi.org/pypi/{nom}/{version}/json", headers={"User-Agent": APP_NAME})
+    with urllib.request.urlopen(requete, timeout=15) as reponse:
+        fichier = next(f for f in json.load(reponse)["urls"] if f["filename"].endswith("win_amd64.whl"))
+    os.makedirs(DOSSIER_TELECHARGEMENTS, exist_ok=True)
+    chemin = os.path.join(DOSSIER_TELECHARGEMENTS, fichier["filename"])
+
+    def avancer(lu, total):
+        progression(f"Carte graphique : {lu // 2**20} / {total // 2**20} Mo", lu / total if total else 0.0)
+
+    try:
+        if not _telecharger([fichier["url"]], chemin, avancer, annule):
+            return False
+        progression("Carte graphique : vérification…", 1.0)
+        empreinte = hashlib.sha256()
+        with open(chemin, "rb") as f:
+            while bloc := f.read(1 << 20):
+                empreinte.update(bloc)
+        if empreinte.hexdigest() != fichier["digests"]["sha256"]:
+            raise OSError("fichier de NVIDIA abîmé pendant le téléchargement")
+        provisoire = DOSSIER_GPU + ".nouveau"
+        shutil.rmtree(provisoire, ignore_errors=True)
+        os.makedirs(provisoire)
+        with zipfile.ZipFile(chemin) as archive:
+            for nom_fichier in FICHIERS_GPU:
+                with archive.open(f"nvidia/cublas/bin/{nom_fichier}") as source, \
+                        open(os.path.join(provisoire, nom_fichier), "wb") as copie:
+                    shutil.copyfileobj(source, copie, 1 << 20)
+        shutil.rmtree(DOSSIER_GPU, ignore_errors=True)
+        os.replace(provisoire, DOSSIER_GPU)
+        log.info("Bibliothèque de la carte graphique installée (%s %s)", nom, version)
         return True
     finally:
         try:
@@ -2978,7 +3074,57 @@ class Traducteur:
         self.echecs = {}  # (source, cible) -> instant du dernier échec passager
         self.japonais_vu_le = -1e9  # dernier texte japonais rencontré (hiragana, katakana)
         self.verrou = threading.RLock()  # la traduction peut être demandée par plusieurs fils
+        self.appareil = "cpu"  # "cuda" : carte graphique NVIDIA, une fois l'essai réussi (essayer_carte_graphique)
         self._charger_cache()
+
+    def _creer(self, chemin):
+        """Un modèle chargé sur la carte graphique si elle est utilisée (sinon, ou si elle n'a plus de place, sur
+        le processeur)."""
+        if self.appareil == "cuda":
+            try:
+                return ctranslate2.Translator(chemin, device="cuda", compute_type="int8_float16")
+            except Exception as e:
+                log.warning("Modèle chargé sur le processeur (carte graphique : %s)", e)
+        return ctranslate2.Translator(chemin, device="cpu", compute_type="int8",
+                                      intra_threads=min(4, max(1, (os.cpu_count() or 2) // 2)))
+
+    def essayer_carte_graphique(self, delai=90):
+        """(Fil à part.) Passe les traductions sur la carte graphique NVIDIA si elle marche vraiment : un essai sur un
+        modèle, `delai` secondes au plus (la toute première fois, la carte prépare son code de calcul). Sinon tout
+        reste sur le processeur. Renvoie un message d'état (affiché dans « Options »)."""
+        if self.appareil == "cuda":
+            return "Active"
+        if not carte_nvidia():
+            return "Pas de carte NVIDIA"
+        if not preparer_carte_graphique():
+            return "Bibliothèque de NVIDIA pas encore téléchargée"
+        modeles = [str(p.package_path / "model") for p in argos.get_installed_packages()]
+        if not modeles:
+            return "Aucun modèle de traduction à essayer"
+        resultat = {}
+
+        def essai():
+            try:
+                debut = time.monotonic()
+                modele = ctranslate2.Translator(modeles[0], device="cuda", compute_type="int8_float16")
+                modele.translate_batch([["▁Hello", "▁world", "."]] * 4, beam_size=2)
+                resultat["duree"] = time.monotonic() - debut
+            except Exception as e:
+                resultat["erreur"] = str(e)
+
+        fil = threading.Thread(target=essai, name="essai_carte_graphique", daemon=True)
+        fil.start()
+        fil.join(delai)
+        if "duree" not in resultat:
+            raison = resultat.get("erreur") or f"pas de réponse en {delai} s"
+            log.warning("Carte graphique inutilisable, traduction sur le processeur : %s", raison)
+            return "Inutilisable : " + raison[:80]
+        with self.verrou:
+            self.appareil = "cuda"
+            self.modeles.clear()  # rechargés sur la carte à leur prochaine traduction
+            self.grands.clear()
+        log.info("Traduction sur la carte graphique NVIDIA (essai en %.1f s)", resultat["duree"])
+        return "Active"
 
     def connu(self, texte, cible):
         return (texte, cible) in self.cache
@@ -3094,6 +3240,10 @@ class Traducteur:
                                               if p.strip() and A_TRADUIRE.search(p) and accepte(p.strip())))
                 traduits = dict(zip(morceaux, self._traduire(morceaux, cible))) if morceaux else {}
                 for texte, parties in decoupes.items():
+                    # Un morceau sauté (échec passager, réessayé dans 30 s) : le texte entier n'est pas mémorisé,
+                    # sinon il resterait à moitié traduit (ou pas du tout) pour de bon.
+                    if any((p.strip(), cible) not in self.cache for p in parties[::2] if p.strip() in traduits):
+                        continue
                     resultat = "".join(
                         p.replace(p.strip(), traduits[p.strip()], 1) if i % 2 == 0 and traduits.get(p.strip()) else p
                         for i, p in enumerate(parties))
@@ -3273,6 +3423,9 @@ class Traducteur:
         installees = self.installees
         if (source, cible) in installees:
             return [(source, cible)]
+        # Un grand modèle direct (espagnol -> français…) : meilleur que deux traductions à la suite.
+        if (source, cible) in GRANDS_MODELES and self._grand_modele(source, cible):
+            return [(source, cible)]
         # Pas de modèle direct : on passe par l'anglais.
         if "en" not in (source, cible) and {(source, "en"), ("en", cible)} <= installees:
             return [(source, "en"), ("en", cible)]
@@ -3285,13 +3438,7 @@ class Traducteur:
                 if p.from_code == de and p.to_code == vers
             )
             # Le découpeur de texte dépend du modèle (SentencePiece ou BPE) : celui d'Argos gère les deux.
-            self.modeles[(de, vers)] = (
-                ctranslate2.Translator(
-                    str(paquet.package_path / "model"), device="cpu", compute_type="int8",
-                    intra_threads=min(4, max(1, (os.cpu_count() or 2) // 2)),
-                ),
-                paquet.tokenizer,
-            )
+            self.modeles[(de, vers)] = (self._creer(str(paquet.package_path / "model")), paquet.tokenizer)
         return self.modeles[(de, vers)]
 
     def _grand_modele(self, de, vers):
@@ -3305,8 +3452,7 @@ class Traducteur:
                 if nom and os.path.exists(os.path.join(chemin, "model.bin")):
                     try:
                         self.grands[(de, vers)] = (
-                            ctranslate2.Translator(chemin, device="cpu", compute_type="int8",
-                                                   intra_threads=min(4, max(1, (os.cpu_count() or 2) // 2))),
+                            self._creer(chemin),
                             sentencepiece.SentencePieceProcessor(model_file=os.path.join(chemin, "source.spm")),
                             sentencepiece.SentencePieceProcessor(model_file=os.path.join(chemin, "target.spm")),
                         )
@@ -3328,13 +3474,18 @@ class Traducteur:
         # Le grand modèle est meilleur dès deux mots (« Se connecter », « Marquer comme lu »), mais pas sur
         # un mot seul (« Wishlist » gardé, « Followers » -> « Suiveurs ») : ceux-là restent au modèle habituel.
         # (Les libellés où il se trompe encore, « Add to cart », sont dans GLOSSAIRE_INTERFACE_FR.)
+        # (Chinois, japonais : pas d'espaces, deux caractères valent à peu près un mot. Un grand modèle direct, sans
+        # modèle habituel pour cette paire, traduit tout.)
         grand = self._grand_modele(de, vers)
-        pour_grand = [i for i, p in enumerate(phrases) if grand and len(p.split()) >= self.MOTS_PHRASE]
+        seul = grand and (de, vers) not in (self.installees or ())
+        pour_grand = [i for i, p in enumerate(phrases)
+                      if grand and (seul or len(p.split()) + len(CJK.findall(p)) / 2 >= self.MOTS_PHRASE)]
         pour_petit = sorted(set(range(len(phrases))) - set(pour_grand))
         if pour_grand:
             modele, source, cible = grand
+            jeton = [JETONS_CIBLE[vers]] if GRANDS_MODELES.get((de, vers)) in MODELES_MULTI_CIBLES else []
             resultats = modele.translate_batch(
-                [source.encode(unicodedata.normalize("NFKC", phrases[i]), out_type=str) for i in pour_grand],
+                [jeton + source.encode(unicodedata.normalize("NFKC", phrases[i]), out_type=str) for i in pour_grand],
                 beam_size=2, max_batch_size=32, max_decoding_length=256, disable_unk=sans_inconnus,
                 no_repeat_ngram_size=4,  # pas de boucle « un gonflement d'un gonflement d'un… »
             )
@@ -3639,6 +3790,7 @@ class Vitre:
     def __init__(self, root, verrou):
         self.verrou = verrou  # partagé avec le suivi en direct
         self.etat = 0
+        self.deplacee = False  # un déplacement du suivi en direct est peut-être encore en attente (voir _replacer)
         self.win = tk.Toplevel(root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
@@ -3664,8 +3816,18 @@ class Vitre:
         with self.verrou:
             self.etat += 1
             poser_image(self.hwnd, image, x, y, opacite=0 if fondu else Vitre.opacite)
+            self._replacer(x, y)
         if fondu:
             self._fondu(0)
+
+    def _replacer(self, x, y):
+        """(Sous le verrou.) La vitre a été déplacée par le suivi en direct : un déplacement encore en attente (confié
+        au fil de la fenêtre principale) la pousserait à l'ancienne place après coup. Sa vraie place est confiée de
+        la même façon, après lui : c'est elle qui l'emporte."""
+        if self.deplacee:
+            self.deplacee = False
+            user32.SetWindowPos(self.hwnd, None, int(x), int(y), 0, 0,
+                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
 
     def deplacer(self, etat, x, y):
         """Déplace la vitre (suivi en direct, autre fil) si elle n'a pas changé depuis `etat`.
@@ -3675,6 +3837,7 @@ class Vitre:
         même fil demande, et tout se figerait."""
         with self.verrou:
             if self.etat == etat:
+                self.deplacee = True
                 user32.SetWindowPos(self.hwnd, None, int(x), int(y), 0, 0,
                                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS)
 
@@ -3697,6 +3860,7 @@ class Vitre:
         with self.verrou:
             self.etat += 1
             poser_image(self.hwnd, VITRE_VIDE, -32000, -32000)
+            self._replacer(-32000, -32000)
 
 
 def dessiner_chargement(etapes=12, taille=22):
@@ -3738,6 +3902,7 @@ class Calque:
         self.libres = []  # vitres prêtes à resservir
         self.vitre_badge = None
         self.vitre_chargement = None  # petit anneau qui tourne pendant qu'une traduction se prépare
+        self.vitre_cadre = None  # fin cadre autour d'une zone choisie (raccourci « zone »)
         self.etape_chargement = None  # image de l'anneau affichée (None : caché)
         self.visible = False
         # Pour l'analyse de l'image (autre fil) : les fenêtres des vitres, à cacher des captures,
@@ -3757,9 +3922,18 @@ class Calque:
         self.hwnds += (vitre.hwnd,)
         return vitre
 
+    RESERVE_MAX = 40  # vitres gardées prêtes à resservir ; les autres sont détruites (une grosse page en laissait des centaines)
+
     def _rendre(self, vitre):
         vitre.cacher()
-        self.libres.append(vitre)
+        if len(self.libres) < self.RESERVE_MAX:
+            self.libres.append(vitre)
+            return
+        self.hwnds = tuple(h for h in self.hwnds if h != vitre.hwnd)
+        try:
+            vitre.win.destroy()
+        except tk.TclError:
+            pass
 
     def changer_style(self, style):
         self.style = style
@@ -3813,6 +3987,23 @@ class Calque:
             if visible is not None and visible != tuple(texte.fenetre):
                 self._rendre(self.affiches.pop(texte))
                 self.dispositions.pop(texte, None)
+
+    def cadre_zone(self, zone):
+        """Un fin cadre de couleur autour de la zone choisie (None : retiré). Les clics le traversent, et la lecture
+        de l'écran ne le voit pas (comme les traductions)."""
+        if zone is None:
+            if self.vitre_cadre is not None:
+                self.vitre_cadre.cacher()
+            return
+        if self.vitre_cadre is None:
+            self.vitre_cadre = Vitre(self.root, self.verrou)
+            self.hwnds += (self.vitre_cadre.hwnd,)
+        x1, y1, x2, y2 = zone
+        marge = 3
+        image = Image.new("RGBA", (x2 - x1 + 2 * marge, y2 - y1 + 2 * marge), (0, 0, 0, 0))
+        ImageDraw.Draw(image).rounded_rectangle((0, 0, image.width - 1, image.height - 1), 6,
+                                                outline=(129, 140, 248, 255), width=2)
+        self.vitre_cadre.montrer(image, x1 - marge, y1 - marge, fondu=False)
 
     def chargement(self, visible):
         """Petit anneau discret qui tourne en haut à droite de l'écran tant qu'une traduction se prépare."""
@@ -4170,9 +4361,28 @@ def navigateurs_de(agent):
     return frozenset({"chrome.exe", "brave.exe"})  # Brave se présente comme Chrome
 
 
+# Pages de l'extension dans les boutiques des navigateurs (à remplir une fois publiée : voir boutiques/ETAPES.md).
+# Tant qu'une page manque, l'extension s'installe depuis son dossier (mode développeur).
+BOUTIQUES = {"chrome": "", "edge": "", "opera": "", "firefox": ""}
+
+
+def boutique_extension():
+    """Page de l'extension dans la boutique du navigateur par défaut, ou "" (pas encore publiée)."""
+    nom = navigateur_par_defaut()
+    famille = ("firefox" if "firefox" in nom else "opera" if "opera" in nom else "edge" if "edge" in nom
+               else "chrome")
+    return BOUTIQUES.get(famille, "")
+
+
 def guide_extension():
     """Étapes d'installation de l'extension : [(texte, bouton ou None)], le bouton « Le dossier » ouvrant celui
-    de l'extension. Les mêmes pour Chrome, Edge, Opera, Brave et Vivaldi ; d'autres pour Firefox."""
+    de l'extension (« Boutique » : sa page dans la boutique du navigateur, une fois publiée). Les mêmes pour Chrome,
+    Edge, Opera, Brave et Vivaldi ; d'autres pour Firefox."""
+    if boutique_extension():
+        return [("Ouvre sa page dans la boutique de ton navigateur, puis « Ajouter ». Elle se met ensuite à jour "
+                 "toute seule.", "Boutique"),
+                ("Épingle-la : l'icône des extensions (pièce de puzzle ou cube) près de la barre d'adresse, "
+                 "puis la punaise.", None)]
     if "firefox" in navigateur_par_defaut():
         return [("Dans le menu de Firefox : « Extensions et thèmes », la roue dentée, puis « Déboguer des modules ».",
                  None),
@@ -4289,15 +4499,16 @@ class Navigation:
     """Barre de navigation à gauche (une icône et un nom par rubrique), la rubrique choisie à droite.
     S'utilise comme les onglets de customtkinter : add(nom) -> page, get(), set(nom), tab(nom)."""
 
-    ICONES = {"Accueil": "", "Langues": "", "Écrire": "", "Apparence": "",
+    ICONES = {"Accueil": "", "Langues": "", "Écrire": "", "Historique": "", "Apparence": "",
               "Où traduire": "", "Sites internet": "", "Options": ""}  # (police « Segoe MDL2 Assets »)
     DESCRIPTIONS = {"Accueil": "Comment ça marche, en quelques secondes",
                     "Langues": "Ta langue, et celles que tu veux comprendre",
                     "Écrire": "Écrire dans une autre langue, et tes mots",
+                    "Historique": "Les dernières traductions, à relire ou copier",
                     "Apparence": "L'allure des traductions",
                     "Où traduire": "Toutes les fenêtres, ou seulement certaines",
                     "Sites internet": "L'extension, pour des sites parfaitement traduits",
-                    "Options": "Démarrage, raccourcis clavier, rapidité"}
+                    "Options": "Démarrage, carte graphique, raccourcis clavier, rapidité"}
     CHOISI = (ACCENT, ACCENT)
     SURVOL = ("#E2E4EC", "#232533")
 
@@ -4362,6 +4573,65 @@ class Navigation:
 
     def tab(self, nom):
         return self.pages[nom]
+
+
+class SelecteurZone:
+    """Choisir une zone à traduire : tout l'écran s'assombrit, on trace un rectangle à la souris (sa zone reste nette).
+    Échap, clic droit ou simple clic : annulé. fini((x1, y1, x2, y2)) en pixels de l'écran, ou fini(None)."""
+
+    TRANSPARENT = "#FF00FE"  # couleur rendue invisible : l'intérieur du rectangle tracé reste net
+
+    def __init__(self, root, fini):
+        self.fini = fini
+        gauche, haut = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)  # tous les écrans ensemble
+        largeur, hauteur = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
+        self.win = tk.Toplevel(root)
+        self.win.overrideredirect(True)
+        self.win.attributes("-topmost", True)
+        self.win.attributes("-alpha", 0.4)
+        self.win.attributes("-transparentcolor", self.TRANSPARENT)
+        self.win.geometry(f"{largeur}x{hauteur}+{gauche}+{haut}")
+        self.toile = tk.Canvas(self.win, bg="#000000", highlightthickness=0, cursor="crosshair")
+        self.toile.pack(fill="both", expand=True)
+        self.depart = None  # (écran, toile) au début du tracé
+        self.rectangle = None
+        self.toile.bind("<ButtonPress-1>", self._debut)
+        self.toile.bind("<B1-Motion>", self._glisser)
+        self.toile.bind("<ButtonRelease-1>", self._fin)
+        self.toile.bind("<ButtonPress-3>", lambda _e: self._fermer(None))
+        self.win.bind("<Escape>", lambda _e: self._fermer(None))
+        self.win.after(20, self._premier_plan)
+
+    def _premier_plan(self):
+        self.win.lift()
+        self.win.focus_force()  # (Échap doit arriver ici)
+
+    def _debut(self, e):
+        self.depart = ((e.x_root, e.y_root), (e.x, e.y))
+
+    def _glisser(self, e):
+        if self.depart is None:
+            return
+        (_, (x, y)) = self.depart
+        if self.rectangle is None:
+            self.rectangle = self.toile.create_rectangle(x, y, e.x, e.y, fill=self.TRANSPARENT, outline="#818CF8",
+                                                         width=2)
+        else:
+            self.toile.coords(self.rectangle, x, y, e.x, e.y)
+
+    def _fin(self, e):
+        if self.depart is None:
+            return self._fermer(None)
+        (x, y), _ = self.depart
+        x1, x2 = sorted((x, e.x_root))
+        y1, y2 = sorted((y, e.y_root))
+        self._fermer((x1, y1, x2, y2) if x2 - x1 >= 16 and y2 - y1 >= 10 else None)  # (un simple clic : annulé)
+
+    def _fermer(self, zone):
+        try:
+            self.win.destroy()
+        finally:
+            self.fini(zone)
 
 
 class Reglages:
@@ -4432,6 +4702,7 @@ class Reglages:
         self._onglet_accueil(onglets.add("Accueil"))
         self._onglet_langue(onglets.add("Langues"))
         self._onglet_ecrire(onglets.add("Écrire"))
+        self._onglet_historique(onglets.add("Historique"))
         self._onglet_apparence(onglets.add("Apparence"))
         self._onglet_programmes(onglets.add("Où traduire"))
         self._onglet_navigateur(onglets.add("Sites internet"))
@@ -4639,6 +4910,55 @@ class Reglages:
                           fg_color="transparent", hover_color=("#ECEDF2", "#2A2C3A"), text_color=self.GRIS,
                           command=lambda l=ligne: self._retirer_mot(l)).pack(side="right")
 
+    def _onglet_historique(self, onglet):
+        ligne = ctk.CTkFrame(onglet, fg_color="transparent")
+        ligne.pack(fill="x", padx=6, pady=(4, 0))
+        ctk.CTkLabel(ligne, text="Gardé seulement tant que le programme tourne, jamais enregistré.", anchor="w",
+                     text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12)).pack(side="left")
+        self._bouton_discret(ligne, "Effacer", self._effacer_historique, 76).pack(side="right")
+        self.liste_historique = ctk.CTkScrollableFrame(onglet, height=60, corner_radius=10,
+                                                       fg_color=("#FFFFFF", "#15161F"))
+        self.liste_historique._scrollbar.configure(height=60)
+        self.liste_historique.pack(fill="both", expand=True, padx=6, pady=(8, 0))
+        self._historique_affiche = None
+
+    HISTORIQUE_AFFICHE = 60  # lignes au plus (les plus récentes) : la fenêtre reste rapide
+
+    def afficher_historique(self):
+        historique = list(self.app.historique)[-self.HISTORIQUE_AFFICHE:]
+        cle = (len(self.app.historique), historique[-1] if historique else None)
+        if cle == self._historique_affiche:
+            return
+        self._historique_affiche = cle
+        for enfant in self.liste_historique.winfo_children():
+            enfant.destroy()
+        if not historique:
+            ctk.CTkLabel(self.liste_historique, text="Rien pour l'instant : les traductions qui apparaissent à l'écran "
+                                                     "s'ajoutent ici.", text_color=self.GRIS, justify="left",
+                         wraplength=380, font=ctk.CTkFont("Segoe UI", 12)).pack(anchor="w", padx=6, pady=6)
+            return
+        for heure, original, traduit in reversed(historique):  # la plus récente en haut
+            rangee = ctk.CTkFrame(self.liste_historique, fg_color="transparent")
+            rangee.pack(fill="x", pady=(2, 4))
+            ctk.CTkButton(rangee, text="", width=28, height=24, font=ctk.CTkFont("Segoe MDL2 Assets", 11),
+                          fg_color="transparent", hover_color=("#ECEDF2", "#2A2C3A"), text_color=self.GRIS,
+                          command=lambda t=traduit: self._copier(t)).pack(side="right", anchor="n")
+            textes = ctk.CTkFrame(rangee, fg_color="transparent")
+            textes.pack(side="left", fill="x", expand=True, padx=(6, 4))
+            ctk.CTkLabel(textes, text=traduit[:400], font=ctk.CTkFont("Segoe UI", 13), anchor="w", justify="left",
+                         wraplength=340).pack(fill="x")
+            ctk.CTkLabel(textes, text=f"{heure} · {original[:200]}", text_color=self.GRIS, anchor="w", justify="left",
+                         wraplength=340, font=ctk.CTkFont("Segoe UI", 11)).pack(fill="x")
+
+    def _copier(self, texte):
+        self.win.clipboard_clear()
+        self.win.clipboard_append(texte)
+        self.app.numero_presse_papiers = user32.GetClipboardSequenceNumber() + 1  # (pas retraduit par la copie)
+
+    def _effacer_historique(self):
+        self.app.historique.clear()
+        self.afficher_historique()
+
     def _onglet_apparence(self, onglet):
         app = self.app
         self._titre(onglet, "Couleur des traductions", 4)
@@ -4668,7 +4988,8 @@ class Reglages:
         self._note(onglet, f"Elle traduit les sites directement dans la page. À installer une fois, en {len(etapes)} "
                            "étapes :")
         for numero, (texte, bouton) in enumerate(etapes, 1):
-            self._etape(onglet, numero, texte, bouton, bouton and self._ouvrir_dossier_extension)
+            commande = (lambda: os.startfile(boutique_extension())) if bouton == "Boutique" else self._ouvrir_dossier_extension
+            self._etape(onglet, numero, texte, bouton, bouton and commande)
         # (Remplacé par ce que fait le bouton « Le dossier ».)
         self.info_extension = ctk.CTkLabel(onglet, text="Son icône affiche « ↻ » ? Clique sur ↻ dans sa carte, sur la "
                                                         "page des extensions.", text_color=self.GRIS,
@@ -4725,6 +5046,9 @@ class Reglages:
     def _onglet_general(self, onglet):
         self.demarrage = self._interrupteur(onglet, "Lancer au démarrage de Windows",
                                             "Démarre discrètement, près de l'horloge", self._changer_demarrage, 4)
+        self.carte_graphique, self.detail_carte = self._interrupteur(
+            onglet, "Carte graphique NVIDIA", "", lambda: self.app.choisir_carte_graphique(self.carte_graphique.get() == 1),
+            avec_detail=True)
         # Tous les raccourcis, dessinés comme des touches, chacun avec son bouton « Changer ».
         self._titre(onglet, "Raccourcis clavier", 14)
         carte = ctk.CTkFrame(onglet, corner_radius=10, fg_color=self.CARTE)
@@ -4753,6 +5077,11 @@ class Reglages:
         self._bouton_discret(ligne, "Oublier les traductions mémorisées", self._oublier, 0).pack(side="left")
         self.info_memoire = ctk.CTkLabel(ligne, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12))
         self.info_memoire.pack(side="left", padx=(10, 0))
+        ligne = ctk.CTkFrame(onglet, fg_color="transparent")
+        ligne.pack(fill="x", padx=6, pady=(8, 0))
+        self._bouton_discret(ligne, "Signaler un problème", self.app.signaler_probleme, 0).pack(side="left")
+        ctk.CTkLabel(ligne, text="sur GitHub", text_color=self.GRIS,
+                     font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", padx=(10, 0))
 
     def _carte(self, parent):
         carte = ctk.CTkFrame(parent, fg_color=self.CARTE, corner_radius=14)
@@ -4776,19 +5105,33 @@ class Reglages:
                                selected_color=ACCENT, selected_hover_color="#4F46E5",
                                command=commande).pack(fill="x", padx=6, pady=(6, 0))
 
-    def _interrupteur(self, parent, titre, detail, commande, haut=14):
-        """Une ligne « titre + explication » avec son interrupteur à droite."""
+    def _interrupteur(self, parent, titre, detail, commande, haut=14, avec_detail=False):
+        """Une ligne « titre + explication » avec son interrupteur à droite (et son explication, si elle change)."""
         ligne = ctk.CTkFrame(parent, fg_color="transparent")
         ligne.pack(fill="x", padx=6, pady=(haut, 0))
         textes = ctk.CTkFrame(ligne, fg_color="transparent")
         textes.pack(side="left")
         ctk.CTkLabel(textes, text=titre, font=ctk.CTkFont("Segoe UI", 14, "bold"), anchor="w").pack(fill="x")
-        ctk.CTkLabel(textes, text=detail, text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
-                     anchor="w").pack(fill="x")
+        explication = ctk.CTkLabel(textes, text=detail, text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
+                                   anchor="w")
+        explication.pack(fill="x")
         interrupteur = ctk.CTkSwitch(ligne, text="", command=commande, width=52,
                                      switch_width=46, switch_height=24, progress_color=ACCENT)
         interrupteur.pack(side="right")
-        return interrupteur
+        return (interrupteur, explication) if avec_detail else interrupteur
+
+    def afficher_carte(self):
+        """L'interrupteur de la carte graphique NVIDIA, et où elle en est."""
+        app = self.app
+        (self.carte_graphique.select if app.config["carte_graphique"] else self.carte_graphique.deselect)()
+        etat = app.etat_carte or ("Désactivée" if not app.config["carte_graphique"] else "")
+        texte = "Traductions environ 10 fois plus rapides" + (f" · {etat}" if etat else "")
+        if etat == "Active":
+            texte, couleur = "✓ Active : traductions environ 10 fois plus rapides", ("#1E8E3E", "#5BD17F")
+        else:
+            couleur = self.GRIS
+        self.detail_carte.configure(text=texte, text_color=couleur)
+        self.carte_graphique.configure(state="disabled" if etat == "Pas de carte NVIDIA sur ce PC" else "normal")
 
     def _bouton_discret(self, parent, texte, commande, largeur):
         return ctk.CTkButton(parent, text=texte, width=largeur or 260, height=32, command=commande,
@@ -4835,7 +5178,8 @@ class Reglages:
         else:
             self.etat_extension.configure(text="Pas encore installée (ou navigateur fermé)", text_color=self.GRIS)
         self.reactivite.set(REACTIVITES[config["reactivite"]][0])
-        combinaisons = {action: config[cle] for action, (cle, _, _) in RACCOURCIS.items()}
+        self.afficher_carte()
+        combinaisons ={action: config[cle] for action, (cle, _, _) in RACCOURCIS.items()}
         if combinaisons != self._raccourcis_affiches:  # (changés dans « Options » : partout les nouveaux)
             self._raccourcis_affiches = combinaisons
             rangees = {action: [ligne[0]] for action, ligne in self.lignes_raccourcis.items()}
@@ -4847,7 +5191,8 @@ class Reglages:
         for action, (_, etiquette, _) in self.lignes_raccourcis.items():
             etiquette.configure(text=RACCOURCIS[action][2])
         aide = [f"{'+'.join(noms_des_touches(combinaisons[action]))} : {role}"
-                for action, role in (("pause", "marche / pause"), ("ecrire", "traduire ton message"))
+                for action, role in (("pause", "marche / pause"), ("ecrire", "traduire ton message"),
+                                     ("zone", "traduire une zone"))
                 if combinaisons[action]]
         self.aide.configure(text="\n".join(aide + ["Fermer la fenêtre ne l'arrête pas"]))
         self._afficher_programmes()
@@ -4935,6 +5280,18 @@ class Reglages:
     def _onglet_change(self):
         if self.onglets.get() == "Où traduire":
             self._mettre_a_jour_programmes()
+        elif self.onglets.get() == "Historique":
+            self._suivre_historique()
+
+    def _suivre_historique(self):
+        """Rubrique « Historique » ouverte et fenêtre visible : les nouvelles traductions s'y ajoutent."""
+        if getattr(self, "_minuterie_historique", None):
+            self.win.after_cancel(self._minuterie_historique)  # (une seule à la fois)
+        self._minuterie_historique = None
+        if self.onglets.get() != "Historique" or not self.win.winfo_viewable():
+            return
+        self.afficher_historique()
+        self._minuterie_historique = self.win.after(2000, self._suivre_historique)
 
     def _changer_demarrage(self):
         try:
@@ -5003,6 +5360,8 @@ class Reglages:
         if self.onglets.get() == "Où traduire":
             self._mettre_a_jour_programmes()
         self.win.deiconify()
+        if self.onglets.get() == "Historique":
+            self.win.after(100, self._suivre_historique)
         # Windows refuse souvent de passer une fenêtre au premier plan : on la met
         # brièvement « toujours au-dessus » pour qu'elle apparaisse devant les autres.
         self.win.attributes("-topmost", True)
@@ -5246,12 +5605,21 @@ class Application:
         self.installation_a_refaire = False  # le choix a changé pendant un téléchargement
         self.progression_installation = None  # (texte, fraction) pendant un téléchargement
         self.erreur_installation = ""  # pourquoi le dernier téléchargement a échoué
+        self.etat_carte = ""  # carte graphique NVIDIA : « Active », « Pas de carte NVIDIA »… (rubrique « Options »)
+        # « Traduire une zone choisie » (raccourci) : seule cette zone est traduite, même en pause, même une image.
+        self.zone_choisie = None  # (x1, y1, x2, y2) en pixels de l'écran
+        self.zone_le = 0.0
+        self.zone_temporaire = False  # la traduction était en pause : elle y revient à la fin de la zone
+        self.selecteur = None  # SelecteurZone ouvert
+        self.historique = collections.deque(maxlen=300)  # (heure, texte d'origine, traduction), le plus récent à la fin
+        self._historique_vu = {}  # texte d'origine -> instant de son dernier ajout (pas dix fois le même d'affilée)
         # (Avant l'icône : son menu, construit par un autre fil, le lit tout de suite.)
         self.mise_a_jour = None  # (version, lien de l'installateur) d'une version plus récente, s'il y en a une
 
         self.icone = self._creer_icone()
         threading.Thread(target=self.icone.run, daemon=True).start()
         self.traducteur = Traducteur(self.langues_choisies(), self.config["mots"])
+        threading.Thread(target=self._preparer_carte_graphique, name="carte_graphique", daemon=True).start()
         self.reglages = Reglages(self.root, self)
         threading.Thread(target=self._boucle_accessibilite, daemon=True).start()
         threading.Thread(target=self._boucle_lecture, daemon=True).start()
@@ -5263,6 +5631,8 @@ class Application:
         self.root.after(400, self._surveiller_presse_papiers)
         self.root.after(3000, self._verifier_extension)
         self.root.after(100, self._garder_vitres)
+        self.plein_ecran_signales = set()  # jeux en plein écran exclusif déjà signalés (une fois chacun)
+        self.root.after(3000, self._surveiller_plein_ecran)
 
         for action, (cle, defaut, _) in RACCOURCIS.items():  # raccourci enregistré illisible : celui par défaut
             combinaison = self.config[cle]
@@ -5309,6 +5679,11 @@ class Application:
                 if message in (WM_MOUSEWHEEL, WM_MOUSEHWHEEL):
                     self._demander_suivi("defilement")
                 elif message in BOUTONS_RELACHES:
+                    zone = self.zone_choisie
+                    if zone:  # un clic hors de la zone choisie : elle n'est plus traduite
+                        point = ctypes.cast(donnees, ctypes.POINTER(wintypes.POINT))[0]
+                        if not (zone[0] <= point.x < zone[2] and zone[1] <= point.y < zone[3]):
+                            self.commandes.put(("fin_zone",))
                     self._interaction()
             return user32.CallNextHookEx(None, code, message, donnees)
 
@@ -5318,6 +5693,8 @@ class Application:
         def sur_clavier(code, message, donnees):
             if code == 0 and message in (WM_KEYDOWN, WM_SYSKEYDOWN):
                 touche = ctypes.cast(donnees, ctypes.POINTER(wintypes.DWORD))[0]
+                if touche == 0x1B and self.zone_choisie:  # Échap : la zone choisie n'est plus traduite
+                    self.commandes.put(("fin_zone",))
                 if any(touche == vk and (not mods & 1 or enfoncee(0x12)) and (not mods & 2 or enfoncee(0x11))
                        and (not mods & 4 or enfoncee(0x10)) and (not mods & 8 or enfoncee(0x5B) or enfoncee(0x5C))
                        for mods, vk in self.touches_capture):
@@ -5366,6 +5743,8 @@ class Application:
                             threading.Thread(target=self._copier_traduction, daemon=True).start()
                         elif action == "pause":
                             self.commandes.put(("basculer",))
+                        elif action == "zone":
+                            self.commandes.put(("choisir_zone",))
                         elif message.message == WM_CHANGER_RACCOURCI and self.raccourci_demande:
                             action, nouveau = self.raccourci_demande
                             pris = False
@@ -5466,6 +5845,22 @@ class Application:
         # Capture de Windows passe devant tout l'écran : les traductions doivent rester, pour être sur l'image.)
         if not self.suivi_en_cours and not self._capture_utilisateur_en_cours():
             self.calque.cacher_sous(fenetre)
+
+    def _surveiller_plein_ecran(self):
+        """(Toutes les 3 s.) Un jeu en plein écran exclusif : Windows n'y laisse rien s'afficher par-dessus, les
+        traductions n'apparaissent pas. On le dit une fois par jeu, avec la solution (« fenêtré sans bordure »)."""
+        try:
+            if self.actif and jeu_plein_ecran():
+                programme = programme_de_fenetre(user32.GetForegroundWindow())
+                if programme and programme not in self.plein_ecran_signales:
+                    self.plein_ecran_signales.add(programme)
+                    log.info("Plein écran exclusif : %s", programme)
+                    self.icone.notify(f"« {programme} » est en plein écran : si ses traductions n'apparaissent pas, "
+                                      "choisis « Fenêtré sans bordure » dans ses options d'affichage.",
+                                      "Traducteur d'écran")
+        except Exception:
+            log.exception("Surveillance du plein écran impossible")
+        self.root.after(3000, self._surveiller_plein_ecran)
 
     def _garder_vitres(self):
         """(Fenêtre principale, toutes les 0,1 s.) Aucune traduction ne reste sur un texte qu'on ne voit plus.
@@ -5770,7 +6165,9 @@ class Application:
             # Images et vidéos vues par l'accessibilité, seulement si relevées après le dernier défilement ou
             # déplacement (sinon elles ont pu bouger). Un clic ou une touche ne les déplace pas : un stream regardé
             # en écrivant dans le chat reste une vidéo, jamais lue.
-            suivi.medias = lambda: self.medias_lus[1] if self.medias_lus[0] > self.dernier_mouvement else []
+            # (Dans une zone choisie, on veut justement leur texte : elles sont lues.)
+            suivi.medias = lambda: self.medias_lus[1] if self.medias_lus[0] > self.dernier_mouvement \
+                and not self.zone_choisie else []
             suivi.textes_surs = lambda: self.textes_lus[1] if self.textes_lus[0] > self.dernier_mouvement else []
         except Exception:
             log.exception("Reconnaissance de texte de Windows indisponible")
@@ -5907,6 +6304,7 @@ class Application:
                 self._signaler("Rien à traduire")
                 return
             ecrire_presse_papiers(traduit)
+            self._noter_historique([(texte.strip(), traduit)])
             time.sleep(0.03)
             self._taper(0x11, 0x56)  # Ctrl+V : la traduction remplace le message sélectionné
             log.info("Ctrl+Alt+Entrée : traduction collée (%d caractères)", len(traduit))
@@ -5998,10 +6396,11 @@ class Application:
                 log.exception("Erreur dans la commande « %s »", commande)
         self.root.after(30, self._traiter_commandes)
 
-    def _activer(self, actif):
+    def _activer(self, actif, enregistrer=True):
         self.actif = actif
-        self.config["actif"] = actif
-        sauver_config(self.config)
+        if enregistrer:  # (pas pour une zone choisie pendant la pause : la pause reste le réglage)
+            self.config["actif"] = actif
+            sauver_config(self.config)
         self.active_le = time.monotonic() if actif else None
         if actif:
             threading.Thread(target=self.traducteur.prechauffer, args=(self.config["langue_cible"],),
@@ -6021,7 +6420,56 @@ class Application:
         self.icone.update_menu()
 
     def basculer(self):
+        self._fin_zone()
         self._activer(not self.actif)
+
+    # ---- traduire une zone choisie (raccourci Ctrl+Alt+Z)
+
+    def _cmd_choisir_zone(self):
+        """L'écran s'assombrit : on entoure à la souris ce qu'on veut traduire."""
+        if self.selecteur is not None:
+            return
+        self._fin_zone()  # (une nouvelle zone remplace l'ancienne)
+        self.selecteur = SelecteurZone(self.root, self._zone_choisie)
+
+    def _zone_choisie(self, zone):
+        """Seule cette zone est traduite, même en pause, même le texte d'une image, d'une vidéo ou d'un jeu (on l'a
+        choisie exprès), jusqu'à Échap ou un clic ailleurs."""
+        self.selecteur = None
+        if zone is None:
+            return  # annulé
+        log.info("Zone choisie : %s", zone)
+        self.zone_choisie, self.zone_le = zone, time.monotonic()
+        self.calque.cadre_zone(zone)
+        if self.actif:
+            self.calque.effacer()  # le reste de l'écran n'est plus traduit pendant ce temps
+        else:
+            self.zone_temporaire = True
+            self._activer(True, enregistrer=False)
+        self.reveil.set()
+        self.reveil_image.set()
+        self.reveil_accessibilite.set()
+        self._signaler("Zone traduite · Échap ou un clic ailleurs pour arrêter", 3)
+
+    def _cmd_fin_zone(self):
+        if self.zone_choisie and time.monotonic() - self.zone_le > 0.3:  # (pas le clic qui a fini de la tracer)
+            self._fin_zone()
+
+    def _fin_zone(self):
+        if self.zone_choisie is None:
+            return
+        self.zone_choisie = None
+        self.calque.cadre_zone(None)
+        if self.zone_temporaire:
+            self.zone_temporaire = False
+            self._activer(False, enregistrer=False)
+        else:
+            self.reveil.set()  # tout l'écran est de nouveau traduit
+        log.info("Fin de la zone choisie")
+
+    def _dans_zone(self, t):
+        zone = self.zone_choisie
+        return zone is not None and zone[0] <= t.x + t.l // 2 < zone[2] and zone[1] <= t.y + t.h // 2 < zone[3]
 
     def choisir_langue(self, code):
         self.config["langue_cible"] = code
@@ -6085,13 +6533,17 @@ class Application:
         utiles = (paires_necessaires(self.langues_choisies(), cible)  # pour lire
                   | paires_necessaires({cible}, self.config["langue_ecriture"]))  # pour écrire
         manquantes = sorted(utiles - paires_installees())
-        # Grand modèle (bien meilleure traduction) : téléchargé à part, s'il est publié (pas livré avec le programme).
-        grands = grands_modeles_manquants(utiles | {("en", cible)}) if DEPOT_GITHUB else []
-        if not manquantes and not grands:
+        # Grands modèles (bien meilleure traduction) : téléchargés à part, s'ils sont publiés (pas livrés avec le
+        # programme). Ceux de l'anglais, ceux d'une étape par l'anglais, et ceux qui traduisent en direct.
+        directs = {(de, cible) for de in self.langues_choisies()}
+        grands = grands_modeles_manquants(utiles | directs | {("en", cible)}) if DEPOT_GITHUB else []
+        # Carte graphique NVIDIA : sa bibliothèque de calcul, une fois (seulement si elle sert).
+        carte = self.config["carte_graphique"] and carte_nvidia() and not bibliotheque_gpu_presente()
+        if not manquantes and not grands and not carte:
             self.reglages.afficher_langues()
             return False
         log.info("Téléchargement des modèles : %s", ", ".join(
-            [f"{de} → {vers}" for de, vers in manquantes] + grands))
+            [f"{de} → {vers}" for de, vers in manquantes] + grands + (["carte graphique"] if carte else [])))
         envoye_le = [0.0]
 
         def progression(texte, fraction):
@@ -6112,6 +6564,14 @@ class Application:
                         self.traducteur.grands = {}  # relu au prochain besoin
                     except Exception:
                         log.exception("Grand modèle %s non téléchargé", nom)
+                if carte:  # (en échec, le processeur suffit : on le note, sans rien bloquer)
+                    try:
+                        if not installer_bibliotheque_gpu(progression, self.arret.is_set):
+                            return
+                        threading.Thread(target=self._preparer_carte_graphique, daemon=True).start()
+                    except Exception as e:
+                        log.exception("Bibliothèque de la carte graphique non téléchargée")
+                        self.etat_carte = "Téléchargement impossible : " + (str(e)[:60] or "erreur")
             except urllib.error.HTTPError as e:
                 log.exception("Téléchargement des modèles impossible")
                 erreur = f"le serveur des modèles a refusé (erreur {e.code}), réessaie plus tard"
@@ -6187,6 +6647,69 @@ class Application:
         self.config["fondu"] = actif
         sauver_config(self.config)
         self.calque.fondu = actif
+
+    def signaler_probleme(self):
+        """« Signaler un problème » : le journal du programme est mis dans un zip, montré dans l'Explorateur, et la
+        page « nouveau problème » du dépôt GitHub s'ouvre, préremplie (version, Windows) : il reste à décrire le
+        problème et à y glisser le zip. Rien ne part tout seul."""
+        zip_journal = os.path.join(APP_DIR, "journal-traducteur.zip")
+        try:
+            with zipfile.ZipFile(zip_journal, "w", zipfile.ZIP_DEFLATED) as archive:
+                for nom in ("journal.txt", "journal.txt.1"):
+                    if os.path.exists(os.path.join(APP_DIR, nom)):
+                        archive.write(os.path.join(APP_DIR, nom), nom)
+            subprocess.Popen(["explorer", "/select,", zip_journal])
+        except OSError:
+            log.exception("Journal non préparé pour le signalement")
+        corps = ("**Ce qui ne marche pas :**\n\n(décris ici ce que tu faisais et ce qui s'est passé)\n\n"
+                 "**Journal :** glisse ici le fichier « journal-traducteur.zip » (il vient de s'ouvrir dans "
+                 "l'Explorateur).\n\n---\n"
+                 f"Version {VERSION_PROGRAMME} · Windows {sys.getwindowsversion().build} · "
+                 f"{'exe' if EST_EXE else 'Python'} · carte graphique : {self.etat_carte or '?'}")
+        os.startfile(f"https://github.com/{DEPOT_GITHUB}/issues/new?"
+                     + urllib.parse.urlencode({"title": "Problème : ", "body": corps}))
+        log.info("Signalement d'un problème : page GitHub ouverte")
+
+    def _preparer_carte_graphique(self):
+        """(Fil à part.) Au lancement, ou une fois sa bibliothèque téléchargée : la carte graphique NVIDIA prend les
+        traductions si elle marche vraiment (sinon le processeur continue, rien ne change)."""
+        if not self.config["carte_graphique"]:
+            self.etat_carte = "Désactivée"
+        elif not carte_nvidia():
+            self.etat_carte = "Pas de carte NVIDIA sur ce PC"
+        elif not bibliotheque_gpu_presente():
+            self.etat_carte = "Téléchargement de 530 Mo au premier usage"
+        else:
+            self.etat_carte = "Essai en cours…"
+            self.commandes.put(("etat_carte",))
+            self.etat_carte = self.traducteur.essayer_carte_graphique()
+            if self.traducteur.appareil == "cuda" and self.actif:
+                self.traducteur.prechauffer(self.config["langue_cible"])  # (sur la carte, cette fois)
+        self.commandes.put(("etat_carte",))
+
+    def _cmd_etat_carte(self):
+        self.reglages.afficher_carte()
+
+    def choisir_carte_graphique(self, actif):
+        self.config["carte_graphique"] = actif
+        sauver_config(self.config)
+        if actif:
+            if bibliotheque_gpu_presente():
+                threading.Thread(target=self._preparer_carte_graphique, daemon=True).start()
+            else:
+                self.synchroniser_modeles()  # (télécharge sa bibliothèque)
+        else:
+            traducteur = self.traducteur
+
+            def processeur():
+                with traducteur.verrou:
+                    traducteur.appareil = "cpu"
+                    traducteur.modeles.clear()
+                    traducteur.grands.clear()
+
+            threading.Thread(target=processeur, daemon=True).start()
+            self.etat_carte = "Désactivée"
+        self.reglages.afficher_carte()
 
     def ajouter_programme(self, programme):
         programme = programme.strip().lower()
@@ -6267,14 +6790,15 @@ class Application:
         version = f"{VERSION_LANCEMENT}-{self.traducteur.generation}"
         # Version de l'extension présente sur le disque : si le navigateur en a chargé une plus ancienne
         # (fichiers mis à jour, extension pas rechargée), elle le dit au lieu de mal marcher.
-        return {"actif": self.actif, "langue": self.config["langue_cible"], "version": version,
-                "extension": version_extension()}
+        # (Une zone choisie pendant la pause ne remet pas les pages web en traduction.)
+        return {"actif": self.actif and not getattr(self, "zone_temporaire", False), "langue": self.config["langue_cible"],
+                "version": version, "extension": version_extension()}
 
     def traduire_pour_extension(self, textes, agent):
         """(Fil du serveur.) Traductions de textes de page web ; None pour ce qui reste tel quel."""
         self.extension_vue(agent)
         cible = self.config["langue_cible"]
-        if not self.actif:
+        if not self.actif or getattr(self, "zone_temporaire", False):
             return {"actif": False, "langue": cible, "traductions": [None] * len(textes)}
         # (Un long bloc mêlant japonais et anglais est traduit ligne par ligne, phrase par phrase : voir traduire.)
         # Par petits paquets : le traducteur est libéré entre deux, et l'écran passe entre (au lancement, chaque
@@ -6637,7 +7161,12 @@ class Application:
         vus = lecteur.vus_hors(perimees) if perimees else lecteur.vus
         # Programmes à ne pas traduire (réglages) : écartés d'après la fenêtre où le texte a été lu, sans
         # attendre l'accessibilité (une fenêtre posée devant, une lecture en retard n'y changent rien).
-        morceaux = [m for m in self.textes_image if lecteur._a_traduire(m.programme)]
+        # Zone choisie (raccourci) : seulement elle, quel que soit le programme, et même le texte d'une image.
+        zone = getattr(self, "zone_choisie", None)
+        if zone:
+            morceaux = [m for m in self.textes_image if self._dans_zone(m)]
+        else:
+            morceaux = [m for m in self.textes_image if lecteur._a_traduire(m.programme)]
         origines = getattr(getattr(self, "suivi", None), "origines", {})
         if vus:
             boites = np.array([v[:4] for v in vus], dtype=np.int64)
@@ -6655,7 +7184,7 @@ class Application:
             # Dans une image ou une vidéo : jamais traduit, même du vrai texte posé dessus
             # (sous-titres, titre en surimpression, durée d'une miniature…).
             cadre = (m.x, m.y, m.x + m.l, m.y + m.h)
-            media = next((r for r in medias if surface_commune(cadre, r) >= 0.5 * m.l * m.h), None)
+            media = None if zone else next((r for r in medias if surface_commune(cadre, r) >= 0.5 * m.l * m.h), None)
             if media is not None:
                 decisions[m] = ((*media, ""), "", "image")
                 continue
@@ -6694,7 +7223,7 @@ class Application:
                 statut = "traduire"
             # (Une ligne qui cite du code, « UNITY_TRANSFER_DEPTH(<v2f>) doesn't do anything… », reste à traduire
             # si l'accessibilité y voit une phrase : le code y est protégé. Sans elle, on s'en tient au texte lu.)
-            if statut in ("ignorer", "pseudo", "autre", "image") \
+            if statut in ("ignorer", "pseudo", "autre") or (statut == "image" and not zone) \
                     or (statut != "traduire" and RESSEMBLE_A_DU_CODE.search(m.texte)) or surtout_des_chiffres(m.texte):
                 continue
             lignes.append(m)
@@ -6727,9 +7256,22 @@ class Application:
                 traduit = self._traduction_voisine(t, affichees, traducteur, cible)
             if traduit:
                 gardes.append((t, traduit))
+        self._noter_historique(gardes)
         couleurs = self._couleurs([t for t, _ in gardes])
         preparees = self.calque.preparer([g[0] for g in gardes], [g[1] for g in gardes], couleurs, self.textes_image)
         self.commandes.put(("resultat", debut, cible, preparees))
+
+    def _noter_historique(self, paires):
+        """Rubrique « Historique » : les traductions qui viennent d'apparaître (pas encore une fois le même texte
+        resté à l'écran : seulement s'il n'y était plus depuis 10 minutes). Gardé en mémoire seulement."""
+        maintenant = time.monotonic()
+        for t, traduit in paires:
+            original = t.texte.replace(MARQUE_CODE, "") if hasattr(t, "texte") else t
+            if maintenant - self._historique_vu.get(original, -1e9) > 600:
+                self.historique.append((time.strftime("%H:%M"), original, traduit.replace(MARQUE_CODE, "")))
+            self._historique_vu[original] = maintenant
+        if len(self._historique_vu) > 5000:
+            self._historique_vu = {o: v for o, v in self._historique_vu.items() if maintenant - v <= 600}
 
     @staticmethod
     def _traduction_voisine(texte, affichees, traducteur, cible):

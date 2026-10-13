@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Traducteur d'écran",
-  "version": "1.7",
+  "version": "1.8",
   "description": "Traduit les pages directement dans la page, avec le Traducteur d'écran installé sur ton PC (hors ligne).",
   "icons": {
     "16": "icones/16.png",
