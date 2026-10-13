@@ -354,6 +354,62 @@ lien = ouvertes[0] if ouvertes else ""
 verifier(lien.startswith(f"https://github.com/{te.DEPOT_GITHUB}/issues/new?") and os.environ["USERNAME"] not in lien
          and "Users" not in lien, "signaler un problème : page GitHub préremplie, rien de personnel", lien[:120])
 verifier(te.jeu_plein_ecran() in (True, False), "plein écran exclusif : Windows répond")
+# Grand modèle de traduction (MADLAD) : toutes les langues sauf l'anglais, directement, langue voulue en tête (« <2fr> »),
+# seulement avec la carte graphique.
+madlad_recus = []
+faux_madlad = types.SimpleNamespace(translate_batch=lambda sources, **k: madlad_recus.extend(sources) or [
+    types.SimpleNamespace(hypotheses=[["▁Tu", "▁veux", "▁jouer", "▁?"]]) for _ in sources])
+faux_spm = types.SimpleNamespace(encode=lambda t, out_type=str: t.split(), decode=lambda j: "".join(j).replace("▁", " "))
+essai_madlad = te.Traducteur.__new__(te.Traducteur)
+essai_madlad.multilingue_permis, essai_madlad.appareil, essai_madlad.multilingue = True, "cuda", (faux_madlad, faux_spm)
+essai_madlad.installees, essai_madlad.grands = {("ja", "en"), ("en", "fr")}, {}
+sauve_present = te.madlad_present
+te.madlad_present = lambda: True
+chemins_madlad = (essai_madlad._chemin("ja", "fr"), essai_madlad._chemin("en", "fr"))
+sortie_madlad = essai_madlad._traduire_lot(["今夜一緒にゲームしない？"], "ja", "fr")
+essai_madlad.appareil = "cpu"
+sans_carte = essai_madlad._chemin("ja", "fr")
+te.madlad_present = sauve_present
+verifier(chemins_madlad == ([("ja", "fr")], [("en", "fr")]) and madlad_recus[0][:1] == ["<2fr>"]
+         and madlad_recus[0][-1] == "</s>" and sortie_madlad == ["Tu veux jouer ?"] and sans_carte == [("ja", "en"), ("en", "fr")],
+         "grand modèle : direct sauf l'anglais, « <2fr> » en tête, rien sans la carte graphique", (chemins_madlad, madlad_recus))
+# IA locale (Ollama) : seulement les phrases ; ses traductions remplacent les premières ; un nombre changé est refusé ;
+# la couper remet les traductions habituelles.
+essai_ia_trad = te.Traducteur.__new__(te.Traducteur)
+essai_ia_trad.verrou, essai_ia_trad.mots, essai_ia_trad.generation = threading.RLock(), te.MesMots(), 0
+essai_ia_trad.cache = {("Break a leg at your show tomorrow!", "fr"): "Cassez une jambe à votre spectacle demain !",
+                       ("I have 3 cats at home now.", "fr"): "J'ai 3 chats à la maison maintenant.",
+                       ("Open Project", "fr"): "Ouvrir le projet"}
+essai_ia_trad.cache_modifie = False
+essai_ia_trad._langue = lambda texte, cible: "en"
+reponses_ia = {"Break a leg at your show tomorrow!": "Bonne chance pour ton spectacle demain !",
+               "I have 3 cats at home now.": "J'ai 4 chats à la maison."}
+sauve_ollama = te.ollama
+te.ollama = lambda chemin, corps=None, delai=120: {"message": {"content": next(
+    v for k, v in reponses_ia.items() if k in corps["messages"][0]["content"])}}
+pretes = []
+ia = te.IALocale(essai_ia_trad, lambda: pretes.append(1))
+ia.actif = True
+ia.proposer(list(k for k, _ in essai_ia_trad.cache), "fr")
+proposes = [t for t, _ in ia.file]
+arret_ia = threading.Event()
+fil_ia = threading.Thread(target=ia.boucle, args=(arret_ia,), daemon=True)
+fil_ia.start()
+for _ in range(100):
+    if not ia.file and pretes:
+        break
+    time.sleep(0.02)
+apres_ia = dict(essai_ia_trad.cache)
+ia.oublier()
+arret_ia.set()
+ia.reveil.set()
+te.ollama = sauve_ollama
+verifier("Open Project" not in proposes
+         and apres_ia[("Break a leg at your show tomorrow!", "fr")].replace("\xa0", " ") == "Bonne chance pour ton spectacle demain !"
+         and apres_ia[("I have 3 cats at home now.", "fr")] == "J'ai 3 chats à la maison maintenant."
+         and ("Break a leg at your show tomorrow!", "fr") not in essai_ia_trad.cache and pretes,
+         "IA locale : phrases seulement, traduction remplacée, nombre changé refusé, coupée : traductions habituelles",
+         (proposes, apres_ia))
 
 # --------------------------------------------------------------------------- avec les vrais modèles
 print("Traductions (vrais modèles)")
@@ -376,6 +432,11 @@ for texte, presents, absents in CAS:
     verifier(traduit and all(p in traduit for p in presents) and not any(a in traduit for a in absents),
              "traduit : " + texte[:45], traduit)
 verifier(traducteur.traduire(["Unity"], "fr")[0] is None, "« Unity » seul n'est pas traduit")
+# Phrase japonaise qui commence par un mot latin : prise pour un pseudo (un seul « mot » sans espaces), jamais traduite.
+verifier(not any(te.ressemble_a_un_pseudo(p, lambda: False) for p in ("Quest版には対応しておりません。",
+                                                                      "Modular Avatarに対応しています。"))
+         and te.ressemble_a_un_pseudo("Kiriko", lambda: False),
+         "phrase japonaise avec un mot latin : pas un pseudo (traduite dans les pages)")
 # Un pseudo en minuscules (profil VRChat) devenait « C'est pourquoi je vous prie de bien vouloir me faire confiance. »
 verifier(te.ressemble_a_un_pseudo("thithis", lambda: False) and not te.ressemble_a_un_pseudo("settings", lambda: False)
          and traducteur.traduire(["thithis"], "fr")[0] is None

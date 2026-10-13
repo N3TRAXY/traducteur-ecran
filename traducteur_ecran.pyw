@@ -102,11 +102,17 @@ GRANDS_MODELES = {
 # Modèles qui traduisent vers plusieurs langues : la langue voulue est indiquée par un jeton en tête du texte.
 JETONS_CIBLE = {"fr": ">>fra<<", "es": ">>spa<<", "pt": ">>por<<", "it": ">>ita<<", "ro": ">>ron<<"}
 MODELES_MULTI_CIBLES = {"itc_itc"}
+# « Grand modèle de traduction » (réglage) : MADLAD-400 3B (Google, licence Apache 2.0), converti pour CTranslate2 par
+# Nextcloud, ~3 Go, sur la carte graphique seulement. Bien meilleur que les petits modèles pour toutes les langues sauf
+# l'anglais (japonais, chinois, coréen… : « Modular Avatar », « README.txt » gardés, sens juste) ; pour l'anglais, les
+# modèles habituels restent meilleurs (boutons, argot : MADLAD donnait « Ajouter à la liste d'envies » pour « Add to cart »).
+MADLAD = {"depot": "Nextcloud-AI/madlad400-3b-mt-ct2-int8", "dossier": "madlad",
+          "fichiers": ("config.json", "shared_vocabulary.json", "spiece.model", "model.bin")}
 # Carte graphique NVIDIA : sa bibliothèque de calcul (cuBLAS) est téléchargée à part, seulement si elle sert.
 DOSSIER_GPU = os.path.join(APP_DIR, "carte_graphique")
 FICHIERS_GPU = ("cublas64_12.dll", "cublasLt64_12.dll")
 CUBLAS = ("nvidia-cublas-cu12", "12.9.2.10")  # (paquet publié par NVIDIA sur PyPI ; version figée, vérifiée)
-VERSION_PROGRAMME = "2.1.0"
+VERSION_PROGRAMME = "2.2.0"
 # Dépôt GitHub (« compte/dépôt ») où sont publiées les versions (mises à jour) et les grands modèles. Vide :
 # ni mise à jour automatique, ni grand modèle téléchargé (celui-ci peut alors être livré à côté du programme).
 DEPOT_GITHUB = "N3TRAXY/traducteur-ecran"
@@ -187,6 +193,8 @@ CONFIG_DEFAUT = {
     "langue_ecriture": "en",  # Ctrl+Alt+Entrée : ce qu'on écrit est traduit dans cette langue
     "mots": [],  # « Mes mots » : un mot jamais traduit, ou « mot = traduction imposée », par ligne
     "carte_graphique": True,  # traduire sur la carte graphique NVIDIA s'il y en a une (~10 fois plus vite)
+    "grand_modele": True,  # grand modèle de traduction (MADLAD, 3 Go), avec la carte graphique seulement
+    "ia_locale": False,  # IA locale par Ollama : le sens et les expressions (il faut Ollama)
 }
 # Raccourcis clavier, tous changeables (rubrique « Options ») : action -> (clé des réglages, par défaut, rôle).
 # Une combinaison vide : aucun raccourci pour cette action.
@@ -1134,6 +1142,10 @@ def ressemble_a_un_pseudo(texte, photo_a_cote):
             return True  # ❤ ☁ BOSTON BAY ☁ ❤, 𝑁𝑖𝑠𝑝ℎ𝑦𝑎
         texte, mots = coeur, coeur.split()
     if len(mots) > 4 or len(texte) > 32:
+        return False
+    # Japonais, chinois : pas d'espaces, toute une phrase passait pour un seul « mot » inconnu (« Quest版には対応して
+    # おりません。 », « Modular Avatarに対応しています。 » n'étaient jamais traduits dans les pages).
+    if len(CJK.findall(texte)) >= 4 or texte.rstrip().endswith(("。", "！", "？", "．")):
         return False
     if any(MOT_DE_PSEUDO.search(m) and not NOMBRE_AVEC_UNITE.fullmatch(m.strip("()[]!?.,:;")) for m in mots):
         return True  # Ninja2077, BeatLeader, dark_angel
@@ -2936,6 +2948,45 @@ def installer_bibliotheque_gpu(progression, annule):
             pass
 
 
+def dossier_madlad():
+    return os.path.join(APP_DIR, "modeles", MADLAD["dossier"])
+
+
+def madlad_present():
+    return all(os.path.exists(os.path.join(dossier_madlad(), f)) for f in MADLAD["fichiers"])
+
+
+def installer_madlad(progression, annule):
+    """Télécharge le grand modèle de traduction (~3 Go) depuis Hugging Face, fichier par fichier, vérifié (empreinte
+    SHA-256 donnée par Hugging Face). False si annulé."""
+    requete = urllib.request.Request(f"https://huggingface.co/api/models/{MADLAD['depot']}/tree/main",
+                                     headers={"User-Agent": APP_NAME})
+    with urllib.request.urlopen(requete, timeout=20) as reponse:
+        empreintes = {f["path"]: (f.get("lfs") or {}).get("oid") for f in json.load(reponse)}
+    provisoire = dossier_madlad() + ".nouveau"
+    os.makedirs(provisoire, exist_ok=True)
+    for i, nom in enumerate(MADLAD["fichiers"]):
+        chemin = os.path.join(provisoire, nom)
+
+        def avancer(lu, total, nom=nom):
+            progression(f"Grand modèle de traduction : {lu // 2**20} / {total // 2**20} Mo" if total > 2**20
+                        else f"Grand modèle de traduction : {nom}", lu / total if total else 0.0)
+
+        if not _telecharger([f"https://huggingface.co/{MADLAD['depot']}/resolve/main/{nom}"], chemin, avancer, annule):
+            return False
+        if empreintes.get(nom):
+            empreinte = hashlib.sha256()
+            with open(chemin, "rb") as f:
+                while bloc := f.read(1 << 20):
+                    empreinte.update(bloc)
+            if empreinte.hexdigest() != empreintes[nom]:
+                raise OSError(f"{nom} abîmé pendant le téléchargement")
+    shutil.rmtree(dossier_madlad(), ignore_errors=True)
+    os.replace(provisoire, dossier_madlad())
+    log.info("Grand modèle de traduction installé (%s)", MADLAD["depot"])
+    return True
+
+
 def numero_de_version(texte):
     """« v2.10.1 » -> (2, 10, 1) : comparable."""
     return tuple(int(n) for n in re.findall(r"\d+", texte)[:3])
@@ -3077,7 +3128,32 @@ class Traducteur:
         self.japonais_vu_le = -1e9  # dernier texte japonais rencontré (hiragana, katakana)
         self.verrou = threading.RLock()  # la traduction peut être demandée par plusieurs fils
         self.appareil = "cpu"  # "cuda" : carte graphique NVIDIA, une fois l'essai réussi (essayer_carte_graphique)
+        self.multilingue_permis = False  # réglage « Grand modèle de traduction »
+        self.multilingue = None  # MADLAD chargé (traducteur, découpeur) ; None : pas encore essayé ; False : inutilisable
         self._charger_cache()
+
+    def _madlad(self):
+        """Le grand modèle de traduction (MADLAD) s'il est permis (réglage), présent et la carte graphique utilisée
+        (sur le processeur, il serait bien trop lent) : (traducteur, découpeur), sinon None."""
+        if not getattr(self, "multilingue_permis", False) or self.appareil != "cuda" or not madlad_present():
+            return None
+        if self.multilingue is None:
+            try:
+                self.multilingue = (
+                    ctranslate2.Translator(dossier_madlad(), device="cuda", compute_type="int8_float16"),
+                    sentencepiece.SentencePieceProcessor(model_file=os.path.join(dossier_madlad(), "spiece.model")))
+                log.info("Grand modèle de traduction chargé sur la carte graphique")
+            except Exception:
+                log.exception("Grand modèle de traduction inutilisable")
+                self.multilingue = False
+        return self.multilingue or None
+
+    def oublier_madlad(self):
+        """(Réglage coupé, carte graphique abandonnée.) Le grand modèle libère la carte graphique."""
+        with self.verrou:
+            self.multilingue = None
+            self.cache = {}  # (ce qu'il a traduit est retraduit avec les modèles habituels)
+            self.generation += 1
 
     def _creer(self, chemin):
         """Un modèle chargé sur la carte graphique si elle est utilisée (sinon, ou si elle n'a plus de place, sur
@@ -3426,6 +3502,9 @@ class Traducteur:
         if self.installees is None:
             self.installees = paires_installees()
         installees = self.installees
+        # Grand modèle de traduction (réglage) : directement, de toute langue sauf l'anglais.
+        if source != "en" and self._madlad():
+            return [(source, cible)]
         if (source, cible) in installees:
             return [(source, cible)]
         # Un grand modèle direct (espagnol -> français…) : meilleur que deux traductions à la suite.
@@ -3476,6 +3555,18 @@ class Traducteur:
             phrases += morceaux
             nombres.append(len(morceaux))
         traduites = [None] * len(phrases)
+        madlad = self._madlad() if de != "en" else None
+        if madlad:  # (la langue voulue est indiquée en tête : « <2fr> »)
+            modele, decoupeur = madlad
+            resultats = modele.translate_batch(
+                [decoupeur.encode(f"<2{vers}> " + unicodedata.normalize("NFKC", p), out_type=str) + ["</s>"]
+                 for p in phrases], beam_size=2, max_batch_size=32, max_decoding_length=256, no_repeat_ngram_size=4)
+            traduites = [" ".join(decoupeur.decode(r.hypotheses[0]).split()) for r in resultats]
+            sortie, debut = [], 0
+            for nombre in nombres:
+                sortie.append(" ".join(traduites[debut:debut + nombre]))
+                debut += nombre
+            return sortie
         # Le grand modèle est meilleur dès deux mots (« Se connecter », « Marquer comme lu »), mais pas sur
         # un mot seul (« Wishlist » gardé, « Followers » -> « Suiveurs ») : ceux-là restent au modèle habituel.
         # (Les libellés où il se trompe encore, « Add to cart », sont dans GLOSSAIRE_INTERFACE_FR.)
@@ -3509,6 +3600,165 @@ class Traducteur:
         for nombre in nombres:
             sortie.append(" ".join(traduites[debut:debut + nombre]))
             debut += nombre
+        return sortie
+
+
+# --------------------------------------------------------------------------- IA locale (Ollama)
+#
+# « Qualité maximale » (réglage) : une IA installée sur ce PC (Ollama) retraduit en arrière-plan ce que les modèles de
+# traduction ont déjà traduit (les phrases). Elle rend le sens et les expressions (« Break a leg » n'est plus « Cassez
+# une jambe » mais « Bonne chance ») ; ses traductions remplacent les premières dès qu'elles sont prêtes. Rien ne part
+# sur internet.
+
+OLLAMA = "http://127.0.0.1:11434"
+# TranslateGemma 4B (Google, fait pour traduire, 3,3 Go sur la carte graphique) : comparé à TranslateGemma 12B et à
+# Qwen3 8B sur des expressions, de l'argot, des pages de boutique (japonais, chinois) : presque aussi bon que le 12B,
+# meilleur que Qwen3 (qui inventait : « Ce mod ne fonctionne pas »), et il laisse de la place à un jeu (VRChat) sur la
+# carte. Les boutons courts restent aux modèles habituels : toutes ces IA en faisaient « Projet ouvert » (Open Project).
+MODELE_IA = "translategemma:4b"
+MOTS_IA = 4  # à partir de ce nombre de mots (deux caractères chinois ou japonais valent un mot), l'IA retraduit
+NOMS_ANGLAIS = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "pt": "Portuguese",
+                "nl": "Dutch", "pl": "Polish", "ro": "Romanian", "sv": "Swedish", "tr": "Turkish", "el": "Greek",
+                "ru": "Russian", "uk": "Ukrainian", "ar": "Arabic", "hi": "Hindi", "zh": "Chinese", "ja": "Japanese",
+                "ko": "Korean", "vi": "Vietnamese", "th": "Thai", "id": "Indonesian", "cs": "Czech", "hu": "Hungarian",
+                "da": "Danish", "nb": "Norwegian", "fi": "Finnish", "bg": "Bulgarian", "he": "Hebrew", "fa": "Persian"}
+
+
+def ollama(chemin, corps=None, delai=120):
+    """Une demande à Ollama (sur ce PC) : sa réponse JSON."""
+    requete = urllib.request.Request(OLLAMA + chemin, json.dumps(corps).encode() if corps is not None else None,
+                                     {"Content-Type": "application/json"})
+    with urllib.request.urlopen(requete, timeout=delai) as reponse:
+        return json.load(reponse)
+
+
+def chemin_ollama():
+    return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama app.exe")
+
+
+def ollama_repond():
+    try:
+        ollama("/api/version", delai=2)
+        return True
+    except Exception:
+        return False
+
+
+class IALocale:
+    """Retraduit par l'IA locale, en arrière-plan et dans l'ordre de lecture, les textes déjà traduits ; ses traductions
+    remplacent les premières dans la mémoire du traducteur, puis `pret()` les fait afficher."""
+
+    LOT = 8  # textes pris à la fois dans la file (dans l'ordre de lecture : ce qui est en haut d'abord)
+
+    def __init__(self, traducteur, pret):
+        self.traducteur, self.pret = traducteur, pret
+        self.file = collections.OrderedDict()  # (texte, cible) -> None, dans l'ordre de lecture
+        self.faites = set()  # (texte, cible) déjà vus par l'IA (gardés ou non)
+        self.gardees = set()  # (texte, cible) dont la traduction est celle de l'IA (retirées si on la coupe)
+        self.verrou = threading.Lock()
+        self.reveil = threading.Event()
+        self.actif = False
+        self.etat = ""
+
+    def a_ameliorer(self, texte):
+        """Ce que l'IA retraduit : une phrase (pas un bouton court), sans code protégé, sans « Mes mots », pas un
+        libellé fixe du glossaire."""
+        mots = self.traducteur.mots
+        return (len(texte.split()) + len(CJK.findall(texte)) / 2 >= MOTS_IA
+                and MARQUE_CODE not in texte and not CODE_CITE.search(texte)
+                and not (mots.motif and mots.motif.search(texte)) and not libelle_du_glossaire(texte))
+
+    def proposer(self, textes, cible):
+        if not self.actif:
+            return
+        with self.verrou:
+            for texte in textes:
+                cle = (texte, cible)
+                if cle not in self.faites and cle not in self.file and self.a_ameliorer(texte):
+                    self.file[cle] = None
+            while len(self.file) > 400:  # (une très grosse page : les plus anciens attendront)
+                self.file.popitem(last=False)
+        if self.file:
+            self.reveil.set()
+
+    def boucle(self, arret):
+        """(Fil dédié.)"""
+        while not arret.is_set():
+            self.reveil.wait(5)
+            self.reveil.clear()
+            while self.actif and not arret.is_set() and self.file:
+                with self.verrou:
+                    lot = list(self.file)[:self.LOT]
+                    cible = lot[0][1]
+                    lot = [cle for cle in lot if cle[1] == cible]
+                    for cle in lot:
+                        del self.file[cle]
+                        self.faites.add(cle)
+                textes = [t for t, _ in lot if self.traducteur.cache.get((t, cible))]  # (traduits par les modèles)
+                if not textes:
+                    continue
+                try:
+                    resultats = self._traduire(textes, cible)
+                except Exception as e:
+                    log.warning("IA locale : pas de réponse (%s)", e)
+                    self.etat = "Ollama ne répond pas : est-il lancé ?"
+                    with self.verrou:
+                        self.faites.difference_update(lot)  # (réessayés plus tard)
+                    arret.wait(10)
+                    break
+                gardes = 0
+                with self.traducteur.verrou:
+                    for texte, traduit in zip(textes, resultats):
+                        traduit = self._verifier(texte, traduit, cible)
+                        if traduit:
+                            self.traducteur.cache[(texte, cible)] = traduit
+                            self.traducteur.cache_modifie = True
+                            self.gardees.add((texte, cible))
+                            gardes += 1
+                if gardes:
+                    self.etat = "Active"
+                    self.pret()
+
+    def oublier(self):
+        """L'IA est coupée : ses traductions sont retirées (les modèles habituels retraduisent ces textes)."""
+        self.actif = False
+        with self.verrou:
+            self.file.clear()
+            self.faites.clear()
+            gardees, self.gardees = self.gardees, set()
+        with self.traducteur.verrou:
+            for cle in gardees:
+                self.traducteur.cache.pop(cle, None)
+            self.traducteur.cache_modifie = True
+            self.traducteur.generation += 1
+
+    def _verifier(self, texte, traduit, cible):
+        """La traduction de l'IA, retouchée, ou None si elle n'est pas sûre (nombres changés, beaucoup trop longue,
+        explications au lieu d'une traduction)."""
+        traduit = " ".join((traduit or "").split()).strip("\"«» ")
+        if not traduit or traduit.casefold() == texte.casefold() or len(traduit) > 3 * len(texte) + 40 \
+                or not memes_chiffres(texte, traduit) or traduction_aberrante(traduit):
+            return None
+        if cible == "fr":
+            traduit = retoucher_francais(traduit)
+        return traduit.upper() if self.traducteur._en_capitales(texte) else traduit
+
+    def _traduire(self, textes, cible):
+        """Une traduction par texte (TranslateGemma : un texte par demande, avec la consigne qu'il attend)."""
+        sortie = []
+        for i, texte in enumerate(textes):
+            with self.traducteur.verrou:
+                source = self.traducteur._langue(texte, cible) or "en"
+            de, vers = NOMS_ANGLAIS.get(source, "English"), NOMS_ANGLAIS.get(cible, "French")
+            invite = (f"You are a professional {de} ({source}) to {vers} ({cible}) translator. Your goal is to accurately "
+                      f"convey the meaning and nuances of the original {de} text while adhering to {vers} grammar, "
+                      f"vocabulary, and cultural sensitivities.\nProduce only the {vers} translation, without any "
+                      f"additional explanations or commentary. Please translate the following {de} text into "
+                      f"{vers}:\n\n\n{texte}")
+            reponse = ollama("/api/chat", {"model": MODELE_IA, "stream": False, "keep_alive": "15m",
+                                           "options": {"temperature": 0, "num_predict": 2 * len(texte) + 64},
+                                           "messages": [{"role": "user", "content": invite}]})
+            sortie.append(reponse["message"]["content"])
         return sortie
 
 
@@ -4507,13 +4757,13 @@ class Navigation:
     ICONES = {"Accueil": "", "Langues": "", "Écrire": "", "Historique": "", "Apparence": "",
               "Où traduire": "", "Sites internet": "", "Options": ""}  # (police « Segoe MDL2 Assets »)
     DESCRIPTIONS = {"Accueil": "Comment ça marche, en quelques secondes",
-                    "Langues": "Ta langue, et celles que tu veux comprendre",
+                    "Langues": "Ta langue, celles à comprendre, et la qualité",
                     "Écrire": "Écrire dans une autre langue, et tes mots",
                     "Historique": "Les dernières traductions, à relire ou copier",
                     "Apparence": "L'allure des traductions",
                     "Où traduire": "Toutes les fenêtres, ou seulement certaines",
                     "Sites internet": "L'extension, pour des sites parfaitement traduits",
-                    "Options": "Démarrage, carte graphique, raccourcis clavier, rapidité"}
+                    "Options": "Démarrage, raccourcis clavier, rapidité"}
     CHOISI = (ACCENT, ACCENT)
     SURVOL = ("#E2E4EC", "#232533")
 
@@ -4748,7 +4998,17 @@ class Reglages:
         self._langues_affichees = None
         self._note(onglet, "Seules ces langues sont traduites, hors ligne, sur ton PC. Jamais traduits : les "
                            "pseudos, les nombres, le code, le texte des images et des vidéos.")
-        self._note(onglet, "Astuce : copier (Ctrl+C) un texte traduit copie sa traduction.")
+        # Qualité des traductions : chaque moyen s'active ou se coupe ici.
+        self._titre(onglet, "Qualité des traductions", 16)
+        self.carte_graphique, self.detail_carte = self._interrupteur(
+            onglet, "Carte graphique NVIDIA", "", lambda: self.app.choisir_carte_graphique(self.carte_graphique.get() == 1),
+            haut=6, avec_detail=True)
+        self.grand_modele, self.detail_grand_modele = self._interrupteur(
+            onglet, "Grand modèle de traduction", "",
+            lambda: self.app.choisir_grand_modele(self.grand_modele.get() == 1), haut=10, avec_detail=True)
+        self.ia_locale, self.detail_ia = self._interrupteur(
+            onglet, "IA locale (qualité maximale)", "", lambda: self.app.choisir_ia(self.ia_locale.get() == 1),
+            haut=10, avec_detail=True)
 
     def _onglet_accueil(self, onglet):
         """Pour la première fois : ce qui est traduit vers quoi, puis comment ça marche, en quatre cartes."""
@@ -5051,9 +5311,6 @@ class Reglages:
     def _onglet_general(self, onglet):
         self.demarrage = self._interrupteur(onglet, "Lancer au démarrage de Windows",
                                             "Démarre discrètement, près de l'horloge", self._changer_demarrage, 4)
-        self.carte_graphique, self.detail_carte = self._interrupteur(
-            onglet, "Carte graphique NVIDIA", "", lambda: self.app.choisir_carte_graphique(self.carte_graphique.get() == 1),
-            avec_detail=True)
         # Tous les raccourcis, dessinés comme des touches, chacun avec son bouton « Changer ».
         self._titre(onglet, "Raccourcis clavier", 14)
         carte = ctk.CTkFrame(onglet, corner_radius=10, fg_color=self.CARTE)
@@ -5126,17 +5383,24 @@ class Reglages:
         return (interrupteur, explication) if avec_detail else interrupteur
 
     def afficher_carte(self):
-        """L'interrupteur de la carte graphique NVIDIA, et où elle en est."""
+        """Les interrupteurs de la qualité des traductions (carte graphique, grand modèle, IA locale), et où chacun
+        en est."""
         app = self.app
-        (self.carte_graphique.select if app.config["carte_graphique"] else self.carte_graphique.deselect)()
-        etat = app.etat_carte or ("Désactivée" if not app.config["carte_graphique"] else "")
-        texte = "Traductions environ 10 fois plus rapides" + (f" · {etat}" if etat else "")
-        if etat == "Active":
-            texte, couleur = "✓ Active : traductions environ 10 fois plus rapides", ("#1E8E3E", "#5BD17F")
-        else:
-            couleur = self.GRIS
-        self.detail_carte.configure(text=texte, text_color=couleur)
-        self.carte_graphique.configure(state="disabled" if etat == "Pas de carte NVIDIA sur ce PC" else "normal")
+        for interrupteur, detail, cle, etat, explication, actif in (
+                (self.carte_graphique, self.detail_carte, "carte_graphique", app.etat_carte,
+                 "Traductions environ 10 fois plus rapides", "✓ Active : traductions environ 10 fois plus rapides"),
+                (self.grand_modele, self.detail_grand_modele, "grand_modele", getattr(app, "etat_grand_modele", ""),
+                 "Bien meilleur, toutes langues · 3 Go, avec la carte graphique", "✓ Actif : toutes les langues"),
+                (self.ia_locale, self.detail_ia, "ia_locale", getattr(app, "etat_ia", ""),
+                 "Le sens et les expressions des phrases · avec Ollama, 3,3 Go", "✓ Active : le sens et les expressions")):
+            (interrupteur.select if app.config.get(cle) else interrupteur.deselect)()
+            etat = etat or ("Désactivé" if not app.config.get(cle) else "")
+            if etat in ("Active", "Actif"):
+                texte, couleur = actif, ("#1E8E3E", "#5BD17F")
+            else:
+                texte, couleur = explication + (f" · {etat}" if etat else ""), self.GRIS
+            detail.configure(text=texte, text_color=couleur, wraplength=330, justify="left")
+            interrupteur.configure(state="disabled" if etat.startswith("Pas de carte") else "normal")
 
     def _bouton_discret(self, parent, texte, commande, largeur):
         return ctk.CTkButton(parent, text=texte, width=largeur or 260, height=32, command=commande,
@@ -5624,7 +5888,13 @@ class Application:
         self.icone = self._creer_icone()
         threading.Thread(target=self.icone.run, daemon=True).start()
         self.traducteur = Traducteur(self.langues_choisies(), self.config["mots"])
+        self.traducteur.multilingue_permis = self.config["grand_modele"]
         threading.Thread(target=self._preparer_carte_graphique, name="carte_graphique", daemon=True).start()
+        self.ia = IALocale(self.traducteur, self._ia_prete)
+        self._ia_signalee_le = 0.0
+        threading.Thread(target=self.ia.boucle, args=(self.arret,), name="ia_locale", daemon=True).start()
+        if self.config["ia_locale"]:
+            threading.Thread(target=self._preparer_ia, name="preparation_ia", daemon=True).start()
         self.reglages = Reglages(self.root, self)
         threading.Thread(target=self._boucle_accessibilite, daemon=True).start()
         threading.Thread(target=self._boucle_lecture, daemon=True).start()
@@ -6542,13 +6812,17 @@ class Application:
         # programme). Ceux de l'anglais, ceux d'une étape par l'anglais, et ceux qui traduisent en direct.
         directs = {(de, cible) for de in self.langues_choisies()}
         grands = grands_modeles_manquants(utiles | directs | {("en", cible)}) if DEPOT_GITHUB else []
-        # Carte graphique NVIDIA : sa bibliothèque de calcul, une fois (seulement si elle sert).
-        carte = self.config["carte_graphique"] and carte_nvidia() and not bibliotheque_gpu_presente()
-        if not manquantes and not grands and not carte:
+        # Carte graphique NVIDIA : sa bibliothèque de calcul, une fois (seulement si elle sert) ; et le grand modèle de
+        # traduction, qui ne marche qu'avec elle.
+        avec_carte = self.config["carte_graphique"] and carte_nvidia()
+        carte = avec_carte and not bibliotheque_gpu_presente()
+        madlad = avec_carte and self.config["grand_modele"] and not madlad_present()
+        if not manquantes and not grands and not carte and not madlad:
             self.reglages.afficher_langues()
             return False
         log.info("Téléchargement des modèles : %s", ", ".join(
-            [f"{de} → {vers}" for de, vers in manquantes] + grands + (["carte graphique"] if carte else [])))
+            [f"{de} → {vers}" for de, vers in manquantes] + grands + (["carte graphique"] if carte else [])
+            + (["grand modèle de traduction"] if madlad else [])))
         envoye_le = [0.0]
 
         def progression(texte, fraction):
@@ -6577,6 +6851,13 @@ class Application:
                     except Exception as e:
                         log.exception("Bibliothèque de la carte graphique non téléchargée")
                         self.etat_carte = "Téléchargement impossible : " + (str(e)[:60] or "erreur")
+                if madlad:
+                    try:
+                        if not installer_madlad(progression, self.arret.is_set):
+                            return
+                        self.traducteur.oublier_madlad()  # (chargé à la prochaine traduction ; tout est retraduit)
+                    except Exception:
+                        log.exception("Grand modèle de traduction non téléchargé")
             except urllib.error.HTTPError as e:
                 log.exception("Téléchargement des modèles impossible")
                 erreur = f"le serveur des modèles a refusé (erreur {e.code}), réessaie plus tard"
@@ -6653,6 +6934,97 @@ class Application:
         sauver_config(self.config)
         self.calque.fondu = actif
 
+    # ---- IA locale (Ollama)
+
+    @property
+    def etat_ia(self):
+        return "Désactivé" if not self.config["ia_locale"] else self.ia.etat
+
+    def _ia_prete(self):
+        """(Fil de l'IA.) De meilleures traductions sont prêtes : l'écran se met à jour, et les pages web (l'extension
+        les redemande quand la version change ; pas plus d'une fois toutes les 3 s)."""
+        self.reveil.set()
+        if time.monotonic() - self._ia_signalee_le > 3:
+            self._ia_signalee_le = time.monotonic()
+            self.traducteur.generation += 1
+        self.commandes.put(("etat_carte",))
+
+    def _preparer_ia(self):
+        """(Fil à part.) Ollama lancé, le modèle de l'IA téléchargé (une fois), puis l'IA se met au travail."""
+        ia = self.ia
+        if not ollama_repond():
+            if not os.path.exists(chemin_ollama()):
+                ia.etat = "installe d'abord Ollama (gratuit) : ollama.com"
+                self.commandes.put(("etat_carte",))
+                return
+            ia.etat = "lancement d'Ollama…"
+            self.commandes.put(("etat_carte",))
+            subprocess.Popen([chemin_ollama()])
+            for _ in range(30):
+                if ollama_repond() or self.arret.wait(1):
+                    break
+        try:
+            modeles = {m.get("name") for m in ollama("/api/tags", delai=10).get("models", [])}
+            if MODELE_IA not in modeles:
+                requete = urllib.request.Request(OLLAMA + "/api/pull", json.dumps({"model": MODELE_IA}).encode(),
+                                                 {"Content-Type": "application/json"})
+                with urllib.request.urlopen(requete, timeout=60) as reponse:
+                    for ligne in reponse:  # (une ligne d'avancement à la fois)
+                        avancement = json.loads(ligne)
+                        if avancement.get("total"):
+                            ia.etat = (f"téléchargement de l'IA : {avancement.get('completed', 0) / 2**30:.1f} / "
+                                       f"{avancement['total'] / 2**30:.1f} Go")
+                            self.commandes.put(("etat_carte",))
+                        if avancement.get("error"):
+                            raise OSError(avancement["error"])
+                        if not self.config["ia_locale"] or self.arret.is_set():
+                            return
+            ia.etat = "Active"
+            ia.actif = self.config["ia_locale"]
+            log.info("IA locale prête (%s)", MODELE_IA)
+            self.reveil.set()  # (ce qui est à l'écran lui est proposé)
+        except Exception as e:
+            log.exception("IA locale indisponible")
+            ia.etat = "Ollama ne répond pas : " + str(e)[:50]
+        self.commandes.put(("etat_carte",))
+
+    def choisir_ia(self, actif):
+        self.config["ia_locale"] = actif
+        sauver_config(self.config)
+        if actif:
+            if not ollama_repond() and not os.path.exists(chemin_ollama()):
+                os.startfile("https://ollama.com/download")  # (à installer une fois ; le réglage attend)
+            threading.Thread(target=self._preparer_ia, daemon=True).start()
+        else:
+            threading.Thread(target=self.ia.oublier, daemon=True).start()
+            self.reveil.set()
+        self.reglages.afficher_carte()
+
+    @property
+    def etat_grand_modele(self):
+        """Où en est le grand modèle de traduction (rubrique « Langues »)."""
+        if not self.config["grand_modele"]:
+            return "Désactivé"
+        if not carte_nvidia():
+            return "Pas de carte NVIDIA sur ce PC"
+        if not self.config["carte_graphique"]:
+            return "il faut la carte graphique (au-dessus)"
+        if not madlad_present():
+            return "téléchargement de 3 Go au premier usage"
+        if self.traducteur.appareil != "cuda":
+            return "en attente de la carte graphique"
+        return "Actif"
+
+    def choisir_grand_modele(self, actif):
+        self.config["grand_modele"] = actif
+        sauver_config(self.config)
+        self.traducteur.multilingue_permis = actif
+        threading.Thread(target=self.traducteur.oublier_madlad, daemon=True).start()  # (retraduit avec ou sans lui)
+        if actif and not madlad_present():
+            self.synchroniser_modeles()
+        self.reveil.set()
+        self.reglages.afficher_carte()
+
     def signaler_probleme(self):
         """« Signaler un problème » : le journal du programme est mis dans un zip, montré dans l'Explorateur, et la
         page « nouveau problème » du dépôt GitHub s'ouvre, préremplie (version, Windows) : il reste à décrire le
@@ -6688,6 +7060,8 @@ class Application:
             self.etat_carte = "Essai en cours…"
             self.commandes.put(("etat_carte",))
             self.etat_carte = self.traducteur.essayer_carte_graphique()
+            if self.traducteur.appareil == "cuda" and self.config["grand_modele"] and madlad_present():
+                self.traducteur.oublier_madlad()  # (ce qui a été traduit sans lui l'est à nouveau, avec lui)
             if self.traducteur.appareil == "cuda" and self.actif:
                 self.traducteur.prechauffer(self.config["langue_cible"])  # (sur la carte, cette fois)
         self.commandes.put(("etat_carte",))
@@ -6711,6 +7085,7 @@ class Application:
                     traducteur.appareil = "cpu"
                     traducteur.modeles.clear()
                     traducteur.grands.clear()
+                    traducteur.multilingue = None  # (le grand modèle de traduction ne marche qu'avec la carte)
 
             threading.Thread(target=processeur, daemon=True).start()
             self.etat_carte = "Désactivée"
@@ -6811,6 +7186,9 @@ class Application:
         traductions = []
         for i in range(0, len(textes), 6):
             traductions += self.traducteur.traduire(textes[i:i + 6], cible, filtre=texte_de_page_a_traduire)
+        ia = getattr(self, "ia", None)
+        if ia is not None:  # (IA locale : améliorées ensuite ; la page les redemande quand la version change)
+            ia.proposer([t for t, traduit in zip(textes, traductions) if traduit], cible)
         return {"actif": True, "langue": cible, "traductions": traductions}
 
     def _verifier_extension(self):
@@ -6985,6 +7363,12 @@ class Application:
     def _cmd_mise_a_jour(self):
         self.reglages.montrer_mise_a_jour(self.mise_a_jour[0])
         self.icone.update_menu()
+        # (Une notification de Windows : la fenêtre est souvent fermée, la carte de l'accueil passait inaperçue.)
+        try:
+            self.icone.notify(f"La version {self.mise_a_jour[0]} est disponible : clic droit sur l'icône du traducteur "
+                              "(près de l'horloge), puis « Mettre à jour ».", "Traducteur d'écran")
+        except Exception:
+            log.exception("Notification de mise à jour impossible")
 
     def _cmd_installer_mise_a_jour(self):
         if self.mise_a_jour and not getattr(self, "maj_en_cours", False):
@@ -7144,6 +7528,8 @@ class Application:
                 finally:
                     if nouveaux:
                         self.commandes.put(("chargement", False))
+                # IA locale (réglage) : ce qui est à l'écran, dans l'ordre de lecture, pour qu'elle l'améliore.
+                self.ia.proposer([t.texte for t in sorted(textes, key=lambda t: (t.y, t.x))], cible)
                 if erreur_affichee:
                     self.commandes.put(("badge", ""))
                     erreur_affichee = False
