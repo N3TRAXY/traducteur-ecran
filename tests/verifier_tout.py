@@ -492,6 +492,7 @@ essai_ia_trad.cache = {("Break a leg at your show tomorrow!", "fr"): "Cassez une
                        ("Open Project", "fr"): "Ouvrir le projet",
                        ("This text is far too long for the engine.", "fr"): "Ce texte est bien trop long pour le moteur."}
 essai_ia_trad.cache_modifie = False
+essai_ia_trad.de_ia = set()
 essai_ia_trad._langue = lambda texte, cible: "en"
 reponses_ia = {"Break a leg at your show tomorrow!": "Bonne chance pour ton spectacle demain !",
                "I have 3 cats at home now.": "J'ai 4 chats à la maison."}
@@ -600,6 +601,72 @@ te.ia_presente = sauve_presente
 verifier(etats_ia == ["Pas de carte graphique adaptée sur ce PC", "Désactivé", "téléchargement de 2,4 Go au premier usage",
                       "démarrage…", "Active"], "IA locale : état affiché sous l'interrupteur", etats_ia)
 
+# Bugs trouvés à la relecture (2026-10-14) :
+# 1. un « [ » dans le texte coupait toute protection (nombres changés, texte abandonné) : les crochets sont protégés ;
+# 2. un nombre collé à du japonais protégeait toute la phrase (elle revenait sans être traduite) ;
+# 6. « Loading.......... » passait pour une erreur du modèle.
+crochets_proteges = te.proteger_code("[Info] Meet me at 4 PM tomorrow", None, True)
+japonais_protege = te.proteger_code("明日の午後4時に駅で会いましょう", None, True)
+verifier(crochets_proteges == ("[A] Meet me at [B] PM tomorrow", ["[Info]", "4"])
+         and te.remettre_code("[A] Rendez-vous à [B] PM demain", crochets_proteges[1]) == "[Info] Rendez-vous à 4 PM demain"
+         and japonais_protege == ("明日の午後[A]時に駅で会いましょう", ["4"])
+         and not te.traduction_aberrante("Chargement..........", "Loading..........")
+         and te.traduction_aberrante("??????????????", "Why?"),
+         "protection : crochets et nombres (même en japonais), répétitions du texte d'origine acceptées",
+         (crochets_proteges, japonais_protege))
+# 3. l'IA perdait le guillemet final et collait les lignes d'un paragraphe ; des guillemets autour de toute sa
+# réponse sont retirés.
+ia_verif = te.IALocale.__new__(te.IALocale)
+ia_verif.traducteur = types.SimpleNamespace(_en_capitales=lambda texte: False)
+verifies = [ia_verif._verifier('He said "hello"', 'Il a dit "bonjour"', "fr"),
+            ia_verif._verifier("Line one is here now\nLine two is here now", "Ligne un est ici\nLigne deux est ici", "fr"),
+            ia_verif._verifier("Please click the button below", '"Cliquez sur le bouton ci-dessous"', "fr")]
+verifier(verifies == ['Il a dit "bonjour"', "Ligne un est ici\nLigne deux est ici", "Cliquez sur le bouton ci-dessous"],
+         "IA : guillemets et lignes gardés", verifies)
+# 4. couper l'IA après un redémarrage laissait ses traductions : elles sont gardées sur le disque avec la marque IA.
+avant_ia = te.Traducteur.__new__(te.Traducteur)
+avant_ia.verrou, avant_ia.cache_modifie = threading.RLock(), True
+avant_ia.cache = {("Click the button below now", "fr"): "TRADUCTION DE L'IA", ("Hello there", "fr"): "Bonjour"}
+avant_ia.de_ia = {("Click the button below now", "fr")}
+avant_ia.sauver()
+apres_ia = te.Traducteur.__new__(te.Traducteur)
+apres_ia.verrou, apres_ia.cache, apres_ia.de_ia, apres_ia.generation = threading.RLock(), {}, set(), 0
+apres_ia._charger_cache()
+te.IALocale(apres_ia, lambda: None).oublier()
+verifier(("Click the button below now", "fr") not in apres_ia.cache and apres_ia.cache.get(("Hello there", "fr")) == "Bonjour",
+         "IA coupée après un redémarrage : ses traductions sont retirées, pas les autres", apres_ia.cache)
+# 5. une traduction de l'IA faite pendant un changement de « Mes mots » n'est pas gardée (anciennes règles).
+regles_trad = te.Traducteur.__new__(te.Traducteur)
+regles_trad.verrou, regles_trad.mots, regles_trad.generation = threading.RLock(), te.MesMots(), 0
+regles_trad.cache, regles_trad.de_ia, regles_trad.cache_modifie = {("Click the button below to go on", "fr"): "Cliquez"}, set(), False
+regles_trad._langue = lambda texte, cible: "en"
+
+
+class MoteurPendantChangement:
+    def completer(self, invite, longueur):
+        regles_trad.changer_mots(["button = bouton-perso"])  # (pendant que l'IA travaille)
+        regles_trad.cache[("Click the button below to go on", "fr")] = "Cliquez sur le bouton-perso"
+        return "Cliquez sur le bouton ci-dessous pour continuer"
+
+    def en_veille(self):
+        pass
+
+
+ia_regles = te.IALocale(regles_trad, lambda: None)
+ia_regles.moteur, ia_regles.actif = MoteurPendantChangement(), True
+ia_regles.proposer(["Click the button below to go on"], "fr")
+arret_regles = threading.Event()
+threading.Thread(target=ia_regles.boucle, args=(arret_regles,), daemon=True).start()
+for _ in range(100):
+    if not ia_regles.file:
+        break
+    time.sleep(0.02)
+time.sleep(0.2)
+arret_regles.set()
+ia_regles.reveil.set()
+verifier(regles_trad.cache.get(("Click the button below to go on", "fr")) == "Cliquez sur le bouton-perso",
+         "IA : un lot traduit pendant un changement de « Mes mots » n'est pas gardé", regles_trad.cache)
+
 # --------------------------------------------------------------------------- avec les vrais modèles
 print("Traductions (vrais modèles)")
 installees = te.langues_installees("fr")
@@ -614,6 +681,18 @@ verifier(traduits_vrchat[0] == "Déconnexion" and traduits_vrchat[1] in (None, "
          and all(traduits_vrchat[2:]),
          "site VRChat : boutons courts traduits, « Description » reste « Description »",
          list(zip(libelles_vrchat, traduits_vrchat)))
+# Bugs trouvés à la relecture : un texte avec des crochets est traduit, ses nombres gardés ; ce qu'on écrit garde son
+# heure ; une erreur passagère (carte graphique pleine) ne rend pas une paire de langues impossible.
+avec_crochets = traducteur.traduire(["[Info] Meet me at 4 PM tomorrow"], "fr")[0]
+ecrit = traducteur.traduire_ecrit("On se voit à 21h demain [ok]", "fr", "en") if ("fr", "en") in te.paires_installees() else "21"
+sauve_lot = traducteur._traduire_avec_reperes
+traducteur._traduire_avec_reperes = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("CUDA out of memory"))
+traducteur._traduire(["A brand new sentence to translate now"], "fr")
+traducteur._traduire_avec_reperes = sauve_lot
+passagere = ("en", "fr") not in traducteur.paires_impossibles and ("en", "fr") in traducteur.echecs
+traducteur.echecs.clear()
+verifier(avec_crochets and "[Info]" in avec_crochets and "4" in avec_crochets and ecrit and "21" in ecrit and passagere,
+         "crochets et nombres gardés, erreur passagère réessayée", (avec_crochets, ecrit, passagere))
 traducteur.prechauffer("fr")
 verifier(("en", "fr") in traducteur.modeles, "modèles anglais → français préchargés à l'activation")
 CAS = [

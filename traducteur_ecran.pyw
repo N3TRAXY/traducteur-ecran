@@ -716,20 +716,26 @@ MARQUE_CODE = "⁣"
 CODE_CITE = re.compile(r"`[^`\n]{1,100}`|⁣[^⁣\n]{1,300}⁣")
 
 
-NOMBRE_A_PROTEGER = re.compile(r"(?<![\w\[])[\w.:,/-]*\d[\w.:,/-]*")  # « 21h », « 2.0 », « 14:30 »
+# « 21h », « 2.0 », « 14:30 » ; pas les caractères chinois ou japonais collés au nombre (« 午後4時に会いましょう » :
+# toute la phrase passait pour un seul nombre, et revenait sans être traduite).
+_LETTRE_LATINE = "A-Za-zÀ-ÖØ-öø-ÿ0-9_"
+NOMBRE_A_PROTEGER = re.compile(rf"(?<![{_LETTRE_LATINE}\[])[{_LETTRE_LATINE}.:,/-]*\d[{_LETTRE_LATINE}.:,/-]*")
+# De vrais crochets dans le texte (« [Info] », « [edited] ») : protégés comme du code, pour ne pas se confondre avec
+# les repères (avant, un seul « [ » coupait toute protection : nombres changés, texte abandonné).
+CROCHETS = re.compile(r"\[[^\[\]\n]{0,40}\]")
 
 
 def proteger_code(texte, mots=None, chiffres=False):
     """(texte avec des repères à la place du code cité et des « Mes mots », ce qui revient à chaque repère).
     Un mot jamais traduit revient tel quel ; un mot à traduction imposée revient traduit comme demandé.
     `chiffres` : les nombres aussi (ce qu'on écrit : une heure ne doit pas être convertie)."""
-    if "[" in texte:  # de vrais crochets se confondraient avec les repères
-        return texte.replace(MARQUE_CODE, ""), []
     codes = []
 
     def reperer(valeur):
         codes.append(valeur)
         return "[%s]" % chr(ord("A") + len(codes) - 1)
+
+    texte = CROCHETS.sub(lambda m: reperer(m.group(0)) if len(codes) < 26 else m.group(0), texte)
 
     texte = CODE_CITE.sub(lambda m: reperer(m.group(0)) if len(codes) < 26 else m.group(0), texte)
     if mots and mots.motif:
@@ -739,6 +745,10 @@ def proteger_code(texte, mots=None, chiffres=False):
         texte = NOMBRE_A_PROTEGER.sub(lambda m: reperer(m.group(0)) if len(codes) < 26 else m.group(0), texte)
     # (Une marque restée seule — plus de 26 codes, code très long — ne part pas au modèle : il en ferait « ⁇ ».)
     return texte.replace(MARQUE_CODE, ""), codes
+
+
+class ModeleAbsent(RuntimeError):
+    """Aucun modèle de traduction pour ces langues (pas une erreur passagère)."""
 
 
 class MesMots:
@@ -920,10 +930,11 @@ def memes_chiffres(texte, traduit):
         CHIFFRE.findall(unicodedata.normalize("NFKC", texte)))
 
 
-def traduction_aberrante(traduit):
-    """Le modèle s'est emballé : le même caractère répété (« ?????? »), ou quelques mots en boucle
-    (« la mastication de la mastication de la… », « * * * * »)."""
-    if re.search(r"(\S)\1{9,}", traduit):
+def traduction_aberrante(traduit, source=""):
+    """Le modèle s'est emballé : le même caractère répété (« ?????? ») sans l'être dans `source` (« Loading……… »,
+    « ---------- » sont de vrais textes), ou quelques mots en boucle (« la mastication de la mastication de la… »)."""
+    repetition = re.search(r"(\S)\1{9,}", traduit)
+    if repetition and repetition.group(1) * 10 not in source:
         return True
     mots = traduit.split()
     return len(mots) >= 12 and len(set(mots)) < 0.35 * len(mots)
@@ -3139,7 +3150,7 @@ class Traducteur:
     CONFIANCE_DEJA_TRADUIT = 0.35  # le texte ressemble déjà assez à la langue voulue
 
     MOTS_PHRASE = 2  # à partir de ce nombre de mots, un texte va au grand modèle s'il existe
-    VERSION_CACHE = 8  # à changer quand les modèles ou les règles changent : les anciennes traductions sont oubliées
+    VERSION_CACHE = 9  # à changer quand les modèles ou les règles changent : les anciennes traductions sont oubliées
 
     def __init__(self, langues=(), mots=()):
         self.detecteur = DetecteurLangue()
@@ -3149,6 +3160,7 @@ class Traducteur:
         self.generation = 0  # augmente quand les langues ou les modèles changent
         self.installees = None  # paires de langues dont le modèle est installé (relu après un téléchargement)
         self.cache = {}  # (texte, cible) -> traduction, ou None si rien à traduire
+        self.de_ia = set()  # (texte, cible) traduits par l'IA locale (gardés sur le disque : retirés si on la coupe)
         self.cache_modifie = False
         self.modeles = {}
         self.grands = {}  # (de, vers) -> grand modèle (traducteur, découpeur source, découpeur cible) ou None
@@ -3277,7 +3289,8 @@ class Traducteur:
             # (Les nombres protégés : « 21h » ne doit pas devenir « 9:00 ».)
             resultats = self._traduire_avec_reperes(morceaux, de, vers, self.mots, chiffres=True)
             traduits = {m: retoucher_francais(r) if vers == "fr" else r
-                        for m, r in zip(morceaux, resultats) if r and not traduction_aberrante(r)}
+                        for m, r in zip(morceaux, resultats)
+                        if r and memes_chiffres(m, r) and not traduction_aberrante(r, m)}
             if not traduits:
                 return None
             return "".join(p.replace(p.strip(), traduits[p.strip()], 1) if i % 2 == 0 and traduits.get(p.strip()) else p
@@ -3307,6 +3320,7 @@ class Traducteur:
             if donnees.get("version") == self.VERSION_CACHE:
                 for cible, texte, traduit in donnees["traductions"]:
                     self.cache[(texte, cible)] = traduit
+                self.de_ia.update((texte, cible) for cible, texte in donnees.get("ia", ()))
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
 
@@ -3318,10 +3332,12 @@ class Traducteur:
             if len(self.cache) > 60_000:  # (une longue soirée sur un chat : la mémoire ne grossit pas sans fin)
                 self.cache = dict(list(self.cache.items())[-30_000:])
             entrees = [(cible, texte, traduit) for (texte, cible), traduit in self.cache.items() if traduit]
+            self.de_ia &= set(self.cache)
+            de_ia = [(cible, texte) for texte, cible in self.de_ia]
         try:
             provisoire = CACHE_TRADUCTIONS + ".tmp"
             with open(provisoire, "w", encoding="utf-8") as fichier:
-                json.dump({"version": self.VERSION_CACHE, "traductions": entrees[-30_000:]}, fichier,
+                json.dump({"version": self.VERSION_CACHE, "traductions": entrees[-30_000:], "ia": de_ia}, fichier,
                           ensure_ascii=False)
             os.replace(provisoire, CACHE_TRADUCTIONS)
         except OSError:
@@ -3390,7 +3406,8 @@ class Traducteur:
             try:
                 resultats = self._traduire_avec_reperes([self._normal(t) for t in lot], source, cible, self.mots,
                                                         argot=source == "en")
-            except RuntimeError:  # aucun modèle pour ces langues : inutile de réessayer
+            except ModeleAbsent:  # aucun modèle pour ces langues : inutile de réessayer (une autre erreur, comme
+                # la mémoire de la carte graphique pleine, est passagère : réessayée plus bas dans 30 s)
                 log.exception("Traduction %s → %s impossible", source, cible)
                 self.paires_impossibles.add((source, cible))
                 resultats = [None] * len(lot)
@@ -3428,7 +3445,7 @@ class Traducteur:
                 if traduit and len(texte.split()) == 1 and not CJK.search(texte) and len(traduit.split()) > 4:
                     log.info("Traduction inventée écartée : %s -> %s", texte[:40], traduit[:80])
                     traduit = None  # un seul mot devenu toute une phrase : le modèle a inventé
-                if traduit and traduction_aberrante(traduit):
+                if traduit and traduction_aberrante(traduit, texte):
                     log.info("Traduction aberrante écartée : %s", traduit[:80])
                     traduit = None  # le modèle s'est emballé : mieux vaut le texte d'origine
                 if traduit and cible == "fr":
@@ -3563,7 +3580,7 @@ class Traducteur:
         # Pas de modèle direct : on passe par l'anglais.
         if "en" not in (source, cible) and {(source, "en"), ("en", cible)} <= installees:
             return [(source, "en"), ("en", cible)]
-        raise RuntimeError(f"Aucun modèle de traduction {source} → {cible} (pas encore téléchargé ?)")
+        raise ModeleAbsent(f"Aucun modèle de traduction {source} → {cible} (pas encore téléchargé ?)")
 
     def _modele(self, de, vers):
         if (de, vers) not in self.modeles:
@@ -3858,18 +3875,21 @@ class MoteurIA:
             except OSError:
                 log.exception("IA locale : moteur non lié au programme")
             log.info("IA locale : démarrage du moteur sur %s", self.carte[1])
-            fin = time.monotonic() + 180
+            processus, fin = self.processus, time.monotonic() + 180
             while time.monotonic() < fin:
-                if self.processus.poll() is not None:
-                    code, self.processus = self.processus.returncode, None
-                    raise RuntimeError(f"le moteur de l'IA s'est arrêté (code {code}, voir ia\\journal-moteur.txt)")
+                if self.processus is not processus:  # (arrêté pendant son démarrage : programme fermé, IA coupée)
+                    raise RuntimeError("le moteur de l'IA a été arrêté pendant son démarrage")
+                if processus.poll() is not None:
+                    self.processus = None
+                    raise RuntimeError(f"le moteur de l'IA s'est arrêté (code {processus.returncode}, voir "
+                                       "ia\\journal-moteur.txt)")
                 try:
                     with self.ouvreur.open(f"http://127.0.0.1:{self.port}/health", timeout=2):
                         self.servi_le = time.monotonic()
                         return
                 except (OSError, HTTPException):  # (503 : le modèle se charge encore)
                     time.sleep(0.5)
-            self.processus.kill()
+            processus.kill()
             self.processus = None
             raise TimeoutError("le moteur de l'IA ne démarre pas (voir ia\\journal-moteur.txt)")
 
@@ -3891,8 +3911,9 @@ class MoteurIA:
             self.arreter()
 
     def arreter(self):
-        with self.verrou:
-            processus, self.processus = self.processus, None
+        """Arrête le moteur tout de suite, même pendant son démarrage (sans attendre son verrou : fermer le programme
+        pendant que le modèle se charge ne doit pas figer la fenêtre)."""
+        processus, self.processus = self.processus, None
         if processus is not None and processus.poll() is None:
             processus.terminate()
             try:
@@ -3911,7 +3932,6 @@ class IALocale:
         self.traducteur, self.pret = traducteur, pret
         self.file = collections.OrderedDict()  # (texte, cible) -> None, dans l'ordre de lecture
         self.faites = set()  # (texte, cible) déjà vus par l'IA (gardés ou non)
-        self.gardees = set()  # (texte, cible) dont la traduction est celle de l'IA (retirées si on la coupe)
         self.verrou = threading.Lock()
         self.reveil = threading.Event()
         self.actif = False
@@ -3956,6 +3976,7 @@ class IALocale:
                 textes = [t for t, _ in lot if self.traducteur.cache.get((t, cible))]  # (traduits par les modèles)
                 if not textes:
                     continue
+                generation = self.traducteur.generation
                 try:
                     resultats = self._traduire(textes, cible)
                 except Exception as e:
@@ -3967,12 +3988,18 @@ class IALocale:
                     break
                 gardes = 0
                 with self.traducteur.verrou:
+                    if self.traducteur.generation != generation:
+                        # « Mes mots » ou les langues ont changé pendant ce lot : traduit avec les anciennes règles,
+                        # il n'est pas gardé (ces textes seront reproposés).
+                        with self.verrou:
+                            self.faites.difference_update(lot)
+                        continue
                     for texte, traduit in zip(textes, resultats):
                         traduit = self._verifier(texte, traduit, cible)
-                        if traduit:
+                        if traduit and self.a_ameliorer(texte):
                             self.traducteur.cache[(texte, cible)] = traduit
                             self.traducteur.cache_modifie = True
-                            self.gardees.add((texte, cible))
+                            self.traducteur.de_ia.add((texte, cible))
                             gardes += 1
                 if gardes:
                     self.etat = "Active"
@@ -3984,8 +4011,8 @@ class IALocale:
         with self.verrou:
             self.file.clear()
             self.faites.clear()
-            gardees, self.gardees = self.gardees, set()
-        with self.traducteur.verrou:
+        with self.traducteur.verrou:  # (toutes ses traductions, même d'avant un redémarrage : voir Traducteur.de_ia)
+            gardees, self.traducteur.de_ia = self.traducteur.de_ia, set()
             for cle in gardees:
                 self.traducteur.cache.pop(cle, None)
             self.traducteur.cache_modifie = True
@@ -3994,9 +4021,15 @@ class IALocale:
     def _verifier(self, texte, traduit, cible):
         """La traduction de l'IA, retouchée, ou None si elle n'est pas sûre (nombres changés, beaucoup trop longue,
         explications au lieu d'une traduction)."""
-        traduit = " ".join((traduit or "").split()).strip("\"«» ")
+        lignes = [" ".join(ligne.split()) for ligne in (traduit or "").splitlines()]
+        traduit = ("\n".join(l for l in lignes if l) if "\n" in texte else " ".join(lignes)).strip()
+        for ouvrant, fermant in (('"', '"'), ("«", "»"), ("“", "”")):
+            if len(traduit) > 2 and traduit[0] == ouvrant and traduit[-1] == fermant \
+                    and not texte.strip().startswith(ouvrant) \
+                    and len(re.findall("[%s%s]" % (ouvrant, fermant), traduit)) == 2:  # (une seule paire, autour)
+                traduit = traduit[1:-1].strip()  # (l'IA a mis toute sa réponse entre guillemets)
         if not traduit or traduit.casefold() == texte.casefold() or len(traduit) > 3 * len(texte) + 40 \
-                or not memes_chiffres(texte, traduit) or traduction_aberrante(traduit):
+                or not memes_chiffres(texte, traduit) or traduction_aberrante(traduit, texte):
             return None
         if cible == "fr":
             traduit = retoucher_francais(traduit)
