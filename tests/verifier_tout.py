@@ -137,6 +137,22 @@ while interrupteur_essai._animation and time.monotonic() < fin_animation:
     time.sleep(0.01)
 verifier(interrupteur_essai.get() == 1 and interrupteur_essai._animation is None and interrupteur_essai.avance == 1.0,
          "interrupteur : il glisse jusqu'au bout et reste allumé", interrupteur_essai.avance)
+carte_page = fenetre_essai.onglets.carte
+racine_essai.update()
+avant_glissement = (carte_page.winfo_x(), carte_page.winfo_y(), racine_essai.winfo_width())
+fenetre_essai.onglets.set("Plus")
+pendant_glissement = carte_page.winfo_manager()
+fin_animation = time.monotonic() + 2
+while fenetre_essai.onglets._glissement and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+racine_essai.update()
+apres_glissement = (carte_page.winfo_x(), carte_page.winfo_y(), racine_essai.winfo_width())  # (la hauteur suit
+# les éléments d'essai ajoutés plus haut dans l'accueil)
+verifier(pendant_glissement == "pack" and carte_page.winfo_manager() == "pack" and apres_glissement == avant_glissement
+         and not fenetre_essai.onglets._vue,
+         "rubrique : la photo de la carte glisse, la vraie carte ne bouge pas et réapparaît",
+         (pendant_glissement, avant_glissement, apres_glissement))
 verifier(choix_essai._glissement is None and abs(choix_essai.position - 2 * choix_essai._case()) < 1,
          "choix : la pastille glisse jusqu'au nouveau choix", (choix_essai.position, choix_essai._case()))
 verifier(relief_anime._animation is None and attendues is not None

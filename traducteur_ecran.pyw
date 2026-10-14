@@ -64,7 +64,7 @@ import pystray
 import sentencepiece
 from py3langid.langid import MODEL_FILE as MODELE_LANGID
 from py3langid.langid import LanguageIdentifier
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageGrab, ImageTk
 from winrt.windows.globalization import Language as LangueWindows
 from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
 from winrt.windows.media.ocr import OcrEngine
@@ -5632,10 +5632,7 @@ class Navigation:
             self.pages[precedent].place_forget()
         self.actif = nom
         page = self.pages[nom]
-        if precedent and precedent != nom and self.zone.winfo_ismapped():
-            self._glisser(page, 1 if list(self.pages).index(nom) > list(self.pages).index(precedent) else -1)
-        else:
-            page.pack(fill="both", expand=True)
+        page.pack(fill="both", expand=True)
         self.ajuster_hauteur()
         for autre, (element, icone, texte) in self.elements.items():
             choisi = autre == nom
@@ -5645,27 +5642,54 @@ class Navigation:
             texte.configure(font=ctk.CTkFont("Segoe UI", 13, "bold" if choisi else "normal"))
         self.titre.configure(text=nom)
         self.description.configure(text=self.DESCRIPTIONS.get(nom, ""))
+        if precedent and precedent != nom and self.zone.winfo_ismapped():  # (après le titre : il est sur la photo)
+            self._glisser(1 if list(self.pages).index(nom) > list(self.pages).index(precedent) else -1)
 
-    def _glisser(self, page, sens, etapes=10, duree=200):
-        """La page arrive en glissant verticalement, comme la liste des rubriques : d'en bas si sens = 1 (rubrique
-        plus bas dans la liste), d'en haut si -1 ; puis elle reprend sa place normale."""
-        if getattr(self, "_glissement", None):
-            self.zone.after_cancel(self._glissement)
-        distance = 40 * sens
-        page.place(x=0, y=distance, relwidth=1, relheight=1)
+    def _glisser(self, sens, etapes=12, duree=220):
+        """Toute la carte de la rubrique (son relief, son titre, son contenu) arrive en glissant verticalement, comme
+        la liste des rubriques : d'en bas si sens = 1 (rubrique plus bas dans la liste), d'en haut si -1.
+        C'est une photo de la carte qui glisse, par-dessus un fond uni : une seule image à déplacer (déplacer la
+        vraie carte obligeait Tk à redessiner tous ses éléments à chaque image, à moitié dessinés). La vraie carte,
+        restée en place, réapparaît à la fin."""
+        carte = getattr(self, "carte", None)
+        if carte is None or not carte.winfo_ismapped():
+            return
+        self._fin_glissement()
+        racine = carte.winfo_toplevel()
+        try:
+            racine.update_idletasks()
+            carte.update()  # (la nouvelle rubrique dessinée, avant la photo)
+            x0, y0 = carte.winfo_rootx(), carte.winfo_rooty()
+            largeur, hauteur = carte.winfo_width(), carte.winfo_height()
+            photo = ImageTk.PhotoImage(ImageGrab.grab((x0, y0, x0 + largeur, y0 + hauteur), all_screens=True))
+        except Exception:  # (fenêtre hors de l'écran, capture impossible : pas d'animation)
+            return
+        fond = FOND[ctk.get_appearance_mode() == "Dark"]
+        x, y = carte.winfo_x(), carte.winfo_y()
+        masque = tk.Frame(racine, bg=fond, bd=0, highlightthickness=0)
+        masque.place(x=x, y=y, width=largeur, height=hauteur)
+        vue = tk.Label(racine, image=photo, bg=fond, bd=0, highlightthickness=0)
+        vue.image = photo
+        distance = round(40 * carte._get_widget_scaling()) * sens
+        self._vue = (masque, vue)
 
         def etape(numero):
-            if self.pages.get(self.actif) is not page:
-                return  # (une autre rubrique a été choisie entre-temps)
             if numero <= etapes:
-                page.place_configure(y=round(distance * (1 - en_douceur(numero / etapes))))
-                self._glissement = self.zone.after(duree // etapes, etape, numero + 1)
+                vue.place(x=x, y=y + round(distance * (1 - en_douceur(numero / etapes))), width=largeur, height=hauteur)
+                self._glissement = carte.after(duree // etapes, etape, numero + 1)
             else:
-                self._glissement = None
-                page.place_forget()
-                page.pack(fill="both", expand=True)
+                self._fin_glissement()
 
         etape(1)
+
+    def _fin_glissement(self):
+        """Arrête un glissement en cours : la photo et son fond disparaissent, la vraie carte se montre."""
+        if getattr(self, "_glissement", None):
+            self.carte.after_cancel(self._glissement)
+        self._glissement = None
+        for morceau in getattr(self, "_vue", ()):
+            morceau.destroy()
+        self._vue = ()
 
     def get(self):
         return self.actif
@@ -5797,6 +5821,7 @@ class Reglages:
         zone.pack(fill="both", expand=True, pady=(10, 0))
         zone.pack_propagate(False)
         onglets = Navigation(barre, zone, titre, description, self._onglet_change)
+        onglets.carte = carte_corps  # (c'est elle qui glisse quand on change de rubrique)
         self.onglets = onglets
         self._onglet_accueil(onglets.add("Accueil"))
         self._onglet_langue(onglets.add("Langues"))
