@@ -5018,8 +5018,6 @@ FOND = ("#E4E9F0", "#252831")
 FOND_CREUX = ("#DCE2EA", "#1F2129")  # champs de saisie, listes
 STYLE_BOUTON = dict(fg_color=FOND, hover_color=("#EDF1F6", "#2C3039"), text_color=ACCENT, corner_radius=10,
                     font=("Segoe UI", 12, "bold"))
-STYLE_INTERRUPTEUR = dict(progress_color=ACCENT, fg_color=("#C9D1DC", "#17191F"), button_color=("#FFFFFF", "#E6E9F0"),
-                          button_hover_color=("#FFFFFF", "#FFFFFF"))
 TEXTE = ("#2F3645", "#E6E9F0")
 OMBRES = {False: ((255, 255, 255, 255), (163, 177, 198, 150)),  # mode clair : (lumière, ombre)
           True: ((52, 57, 70, 255), (14, 15, 19, 255))}  # mode sombre
