@@ -3726,6 +3726,10 @@ MODELE_IA = {"depot": "mradermacher/translategemma-4b-it-GGUF", "revision": "d37
              "sha256": "81200d03e843d2ec1ece6eeafe7d13cb6e5211e1fcd336ade55790b683a08330"}
 MEMOIRE_IA = 4000  # Mo au moins sur la carte graphique (l'IA en prend 2,8)
 VEILLE_IA = 15 * 60  # s sans rien à retraduire : le moteur s'arrête et rend la mémoire de la carte (à un jeu)
+# Vers le français, l'IA tutoie, comme le programme (sans cela, elle vouvoyait presque toujours : « Pouvez-vous… »,
+# « Merci pour votre achat »). Comparé sur 7 phrases : 7 tutoient, sans perte de qualité.
+TUTOIEMENT = "Address the reader informally: always use « tu » (tutoiement), never « vous ».
+"
 MOTS_IA = 4  # à partir de ce nombre de mots (deux caractères chinois ou japonais valent un mot), l'IA retraduit
 NOMS_ANGLAIS = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "pt": "Portuguese",
                 "nl": "Dutch", "pl": "Polish", "ro": "Romanian", "sv": "Swedish", "tr": "Turkish", "el": "Greek",
@@ -4072,7 +4076,8 @@ class IALocale:
             de, vers = NOMS_ANGLAIS.get(source, "English"), NOMS_ANGLAIS.get(cible, "French")
             invite = (f"You are a professional {de} ({source}) to {vers} ({cible}) translator. Your goal is to accurately "
                       f"convey the meaning and nuances of the original {de} text while adhering to {vers} grammar, "
-                      f"vocabulary, and cultural sensitivities.\nProduce only the {vers} translation, without any "
+                      f"vocabulary, and cultural sensitivities.\n{TUTOIEMENT if cible == 'fr' else ''}"
+                      f"Produce only the {vers} translation, without any "
                       f"additional explanations or commentary. Please translate the following {de} text into "
                       f"{vers}:\n\n\n{texte}")
             try:
