@@ -25,7 +25,9 @@ Tous les raccourcis clavier se changent dans la rubrique « Options ».
 - **Historique** des dernières traductions, à relire ou copier.
 - **Carte graphique NVIDIA** utilisée toute seule si elle est là : environ 10 fois plus rapide.
 - Grands modèles de traduction (bien meilleurs) pour l'anglais, l'espagnol, le portugais, l'italien, le russe,
-  l'ukrainien, le polonais et le chinois.
+  l'ukrainien, le polonais et le chinois ; avec la carte graphique, **MADLAD-400 3B** pour toutes les langues sauf
+  l'anglais (japonais, coréen…).
+- **IA locale** en option (Ollama + TranslateGemma 4B) : retraduit les phrases avec leur sens et leurs expressions.
 - « Options » → **Signaler un problème** : une page de ce dépôt préremplie, avec le journal à joindre.
 
 ## Pour les développeurs
@@ -40,7 +42,9 @@ Tous les raccourcis clavier se changent dans la rubrique « Options ».
 Traduction par [Argos Translate](https://github.com/argosopentech/argos-translate) (MIT) et par les modèles
 [OPUS-MT](https://github.com/Helsinki-NLP/Tatoeba-Challenge) de Helsinki-NLP (CC-BY 4.0), convertis pour
 CTranslate2 et publiés dans la version [« modeles »](../../releases/tag/modeles) : opus-mt-tc-big-en-fr,
-opus-mt-tc-big-itc-itc, opus-mt-tc-big-zle-fr, opus-mt-tc-big-zlw-en, opus-mt-tc-bible-big-zhx-en. Carte graphique : bibliothèque cuBLAS de NVIDIA, téléchargée depuis PyPI (paquet `nvidia-cublas-cu12`
+opus-mt-tc-big-itc-itc, opus-mt-tc-big-zle-fr, opus-mt-tc-big-zlw-en, opus-mt-tc-bible-big-zhx-en ; MADLAD-400 3B
+(Google, Apache 2.0, converti par Nextcloud, téléchargé depuis Hugging Face) ; IA locale : TranslateGemma 4B (Google,
+conditions d'utilisation de Gemma), téléchargée par Ollama. Carte graphique : bibliothèque cuBLAS de NVIDIA, téléchargée depuis PyPI (paquet `nvidia-cublas-cu12`
 publié par NVIDIA), seulement sur les PC qui ont une carte NVIDIA.
 
 L'extension pour les boutiques des navigateurs : voir [`boutiques/`](boutiques/ETAPES.md).
