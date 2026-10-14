@@ -170,6 +170,7 @@ NOMS_STYLES = {"auto": "Auto", "clair": "Clair", "sombre": "Sombre"}
 TAILLES = {"petite": ("Petite", 0.88), "normale": ("Normale", 1.0), "grande": ("Grande", 1.15)}
 # Qualité des traductions, en un seul choix : normale (le processeur), meilleure (la carte graphique NVIDIA et le
 # grand modèle de traduction), maximale (les deux, et l'IA locale). Voir Application.choisir_qualite.
+THEMES = {"systeme": ("Système", "system"), "clair": ("Clair", "light"), "sombre": ("Sombre", "dark")}
 NIVEAUX_QUALITE = {"normale": "Normale", "meilleure": "Meilleure", "maximale": "Maximale (IA)"}
 # Réactivité : nom affiché, et secondes entre deux analyses de l'écran (juste après une action, au repos).
 REACTIVITES = {"econome": ("Économe", 0.3, 1.0), "normale": ("Normale", 0.1, 0.5), "rapide": ("Rapide", 0.05, 0.25)}
@@ -193,6 +194,7 @@ CONFIG_DEFAUT = {
     "taille": "normale",  # taille du texte des traductions (voir TAILLES)
     "opacite": 100,  # opacité des traductions, en %
     "fondu": True,  # les traductions apparaissent en douceur
+    "theme": "systeme",  # thème de la fenêtre et de l'extension : comme Windows, clair ou sombre
     "programmes": [],  # liste de programmes choisis (« steam.exe »…)
     "mode_programmes": "sauf",  # "sauf" : tout sauf la liste ; "seulement" : seulement la liste
     "reactivite": "normale",  # voir REACTIVITES
@@ -5856,7 +5858,11 @@ class Reglages:
 
     def _onglet_apparence(self, onglet):
         app = self.app
-        self._titre(onglet, "Couleur des traductions", 4)
+        self._titre(onglet, "Thème de la fenêtre", 4)
+        self.theme = ctk.StringVar()
+        self._choix(onglet, [nom for nom, _ in THEMES.values()], self.theme,
+                    lambda v: app.choisir_theme(next(c for c, (nom, _) in THEMES.items() if nom == v)))
+        self._titre(onglet, "Couleur des traductions")
         self.style = ctk.StringVar()
         self._choix(onglet, NOMS_STYLES.values(), self.style,
                     lambda v: app.choisir_style(next(c for c, nom in NOMS_STYLES.items() if nom == v)))
@@ -6063,6 +6069,7 @@ class Reglages:
         self.langue.set(NOM_PAR_CODE[config["langue_cible"]])
         self.langue_ecriture.set(NOM_PAR_CODE[config["langue_ecriture"]])
         self._afficher_mots()
+        self.theme.set(THEMES.get(config["theme"], THEMES["systeme"])[0])
         self.style.set(NOMS_STYLES[config["style"]])
         self.taille.set(TAILLES[config["taille"]][0])
         self.opacite.set(config["opacite"])
@@ -6455,7 +6462,7 @@ class ChoixLangues:
 class Application:
     def __init__(self, montrer_reglages=True):
         self.config = charger_config()
-        ctk.set_appearance_mode("dark")
+        ctk.set_appearance_mode(THEMES.get(self.config["theme"], THEMES["systeme"])[1])
         self.root = ctk.CTk()
         self.root.withdraw()
         # Une erreur dans la fenêtre (réglages, affichage) est notée dans le journal.
@@ -7503,6 +7510,13 @@ class Application:
         sauver_config(self.config)
         self.calque.regler_opacite(round(pourcentage * 255 / 100))
 
+    def choisir_theme(self, theme):
+        """Thème de la fenêtre (et de la fenêtre de l'extension, qui le lit dans /etat)."""
+        self.config["theme"] = theme
+        sauver_config(self.config)
+        ctk.set_appearance_mode(THEMES[theme][1])
+        log.info("Thème choisi : %s", theme)
+
     def choisir_fondu(self, actif):
         self.config["fondu"] = actif
         sauver_config(self.config)
@@ -7768,7 +7782,7 @@ class Application:
         # (fichiers mis à jour, extension pas rechargée), elle le dit au lieu de mal marcher.
         # (Une zone choisie pendant la pause ne remet pas les pages web en traduction.)
         return {"actif": self.actif and not getattr(self, "zone_temporaire", False), "langue": self.config["langue_cible"],
-                "version": version, "extension": version_extension()}
+                "version": version, "extension": version_extension(), "theme": self.config.get("theme", "systeme")}
 
     def traduire_pour_extension(self, textes, agent):
         """(Fil du serveur.) Traductions de textes de page web ; None pour ce qui reste tel quel."""

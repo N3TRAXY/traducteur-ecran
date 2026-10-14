@@ -763,7 +763,7 @@ def demande(methode, chemin, corps=None, entetes=None):
 EXT = {"X-Traducteur-Ecran": "1", "Content-Type": "application/json"}
 code, corps = demande("GET", "/etat", entetes=EXT)
 etat = json.loads(corps) if code == 200 else {}
-verifier(code == 200 and {"actif", "langue", "version", "extension"} <= set(etat), "/etat complet", corps)
+verifier(code == 200 and {"actif", "langue", "version", "extension", "theme"} <= set(etat), "/etat complet", corps)
 verifier(demande("GET", "/etat")[0] == 403, "sans l'en-tête de l'extension : refusé")
 verifier(demande("GET", "/etat", entetes={**EXT, "Host": "site.com"})[0] == 403, "autre adresse : refusé")
 verifier(demande("OPTIONS", "/traduire", entetes={"Origin": "https://site.com"})[0] == 501, "page web : refusée")
