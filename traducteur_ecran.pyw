@@ -5589,6 +5589,7 @@ class Navigation:
                     "Apparence": "L'allure des traductions",
                     "Plus": "Où traduire, sites internet, raccourcis, historique"}
     GRIS = ("#7A8499", "#8C93A6")
+    REPOS = 0.55  # relief d'une rubrique au repos (plein au survol ; la rubrique choisie est creusée)
 
     def __init__(self, barre, zone, titre, description, commande=None):
         self.barre, self.zone, self.titre, self.description = barre, zone, titre, description
@@ -5599,7 +5600,7 @@ class Navigation:
     def add(self, nom):
         page = ctk.CTkFrame(self.zone, fg_color="transparent")
         element = Relief(self.barre, etat="creux", rayon=12, decalage=2, flou=3, interieur=3)
-        element.changer("plat", anime=False)  # (marges d'un élément creusé : la rubrique choisie le devient sans bouger)
+        element.changer("relief", self.REPOS, anime=False)  # (marges d'un élément creusé : la rubrique choisie le devient sans bouger)
         element.pack(fill="x", padx=8, pady=1)
         icone = ctk.CTkLabel(element.dedans, text=self.ICONES.get(nom, ""), width=26,
                              font=ctk.CTkFont("Segoe MDL2 Assets", 15))
@@ -5623,7 +5624,7 @@ class Navigation:
     def _survoler(self, nom, dessus):
         if nom != self.actif:
             element = self.elements[nom][0]
-            element.changer("relief", 0.5) if dessus else element.changer("plat")
+            element.changer("relief", 1.0 if dessus else self.REPOS)
             for etiquette in self.elements[nom][1:]:
                 etiquette.configure(text_color=TEXTE if dessus else self.GRIS)
 
@@ -5638,7 +5639,7 @@ class Navigation:
         self.ajuster_hauteur()
         for autre, (element, icone, texte) in self.elements.items():
             choisi = autre == nom
-            element.changer("creux" if choisi else "plat")
+            element.changer("creux" if choisi else "relief", 1.0 if choisi else self.REPOS)
             for etiquette in (icone, texte):
                 etiquette.configure(text_color=ACCENT if choisi else self.GRIS)
             texte.configure(font=ctk.CTkFont("Segoe UI", 13, "bold" if choisi else "normal"))
@@ -5867,13 +5868,12 @@ class Reglages:
         """L'essentiel sur une page : marche / pause, les langues, la qualité, les raccourcis, l'extension."""
         app = self.app
         # Nouvelle version disponible (cachée tant qu'il n'y en a pas : voir montrer_mise_a_jour).
-        self.carte_maj = ctk.CTkFrame(onglet, corner_radius=12, fg_color=(ACCENT, ACCENT))
-        self.texte_maj = ctk.CTkLabel(self.carte_maj, text="", text_color="#FFFFFF", anchor="w",
+        self.carte_maj = Relief(onglet, rayon=16)
+        self.texte_maj = ctk.CTkLabel(self.carte_maj.dedans, text="", text_color=ACCENT, anchor="w",
                                       font=ctk.CTkFont("Segoe UI", 13, "bold"))
-        self.texte_maj.pack(side="left", fill="x", expand=True, padx=(14, 6), pady=8)
-        ctk.CTkButton(self.carte_maj, text="Mettre à jour", width=120, height=28, fg_color="#FFFFFF",
-                      text_color=ACCENT, hover_color="#DBEAFE", font=ctk.CTkFont("Segoe UI", 12, "bold"),
-                      command=lambda: self.app.commandes.put(("installer_mise_a_jour",))).pack(side="right", padx=(0, 10))
+        self.texte_maj.pack(side="left", fill="x", expand=True, padx=(4, 6))
+        BoutonRelief(self.carte_maj.dedans, "Mettre à jour", lambda: self.app.commandes.put(("installer_mise_a_jour",)),
+                     120, accent=True).pack(side="right")
         # Marche / pause, en grand.
         carte = self.carte_marche = Relief(onglet, rayon=18)
         carte.pack(fill="x", pady=(0, 4))
@@ -5936,9 +5936,7 @@ class Reglages:
         self.etat_extension_accueil = ctk.CTkLabel(textes, text="", text_color=self.GRIS, anchor="w",
                                                    font=ctk.CTkFont("Segoe UI", 12))
         self.etat_extension_accueil.pack(fill="x")
-        self.bouton_extension = ctk.CTkButton(carte, text="Installer", width=84, height=28, fg_color=ACCENT,
-                                              hover_color=ACCENT_SURVOL, font=ctk.CTkFont("Segoe UI", 12),
-                                              command=lambda: self.onglets.set("Plus"))
+        self.bouton_extension = BoutonRelief(carte, "Installer", lambda: self.onglets.set("Plus"), 84, accent=True)
         self.bouton_extension.pack(side="right", padx=4)
 
     def montrer_mise_a_jour(self, version):
@@ -6149,8 +6147,7 @@ class Reglages:
         ctk.CTkLabel(ligne, text=str(numero), width=24, height=24, corner_radius=12, fg_color=ACCENT,
                      text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 10))
         if bouton:
-            ctk.CTkButton(ligne, text=bouton, width=92, height=28, fg_color=ACCENT, hover_color=ACCENT_SURVOL,
-                          font=ctk.CTkFont("Segoe UI", 12), command=commande).pack(side="right", padx=(6, 0))
+            BoutonRelief(ligne, bouton, commande, 92, accent=True).pack(side="right", padx=(6, 0))
         ctk.CTkLabel(ligne, text=texte, anchor="w", justify="left", wraplength=255 if bouton else 355,
                      font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", fill="x", expand=True)
 
