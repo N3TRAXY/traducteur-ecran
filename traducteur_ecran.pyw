@@ -5918,12 +5918,17 @@ class Reglages:
             self.info_extension.configure(text="Dossier introuvable : " + dossier)
 
     def _onglet_programmes(self, onglet):
+        """Une seule carte en relief : le choix (tous sauf / seulement la liste), la ligne pour ajouter un programme,
+        et les programmes choisis dans leur creux."""
         app = self.app
+        carte = Relief(onglet, rayon=18)
+        carte.pack(fill="x", pady=(2, 0))
+        onglet = carte.dedans
         self.mode_programmes = ctk.StringVar()
         self._choix(onglet, MODES_PROGRAMMES.values(), self.mode_programmes,
                     lambda v: app.choisir_mode_programmes(next(c for c, nom in MODES_PROGRAMMES.items() if nom == v)))
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
-        ligne.pack(fill="x", padx=6, pady=(8, 0))
+        ligne.pack(fill="x", pady=(6, 0))
         self.a_ajouter = ctk.StringVar(value=self.CHOISIR)
         relief, self.menu_programmes = menu_relief(ligne, [self.CHOISIR], self.a_ajouter, None, largeur=150,
                                                    dynamic_resizing=False)
@@ -5975,7 +5980,7 @@ class Reglages:
 
     # ---- éléments de la fenêtre
 
-    CHOISIR = "Choisir un programme ouvert…"
+    CHOISIR = "Choisir un programme…"
 
     def _titre(self, parent, texte, haut=12):
         ctk.CTkLabel(parent, text=texte, font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(
