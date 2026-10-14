@@ -43,7 +43,7 @@ place). La vérification prend de quelques heures à quelques jours.
 ## Une fois publiée
 
 Envoie-moi le lien de chaque page publiée : je le mets dans le programme (`BOUTIQUES` dans `traducteur_ecran.pyw`).
-La rubrique « Sites internet » proposera alors **« Boutique »** (installation en un clic, mises à jour automatiques)
+La section « Sites internet » (rubrique « Plus ») proposera alors **« Boutique »** (installation en un clic, mises à jour automatiques)
 au lieu du mode développeur.
 
 Pour une nouvelle version de l'extension : monter `version` dans `extension/manifest.json`, reconstruire, et envoyer

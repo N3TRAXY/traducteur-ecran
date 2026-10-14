@@ -69,6 +69,46 @@ verifier(zones_spotify == [True, True, True, True, False, False]
          and not lecteur_essai._zone_ignoree("opera.exe", U.UIA_HyperlinkControlTypeId, "lien")
          and not lecteur_essai._zone_ignoree("opera.exe", U.UIA_DataItemControlTypeId, "ligne"),
          "Spotify : titres et noms jamais traduits, ses boutons oui", zones_spotify)
+# La fenêtre des réglages se construit (4 rubriques) : un oubli dans son code arrêtait le programme au lancement.
+class FauxApp:
+    def __init__(self):
+        self.config = dict(te.CONFIG_DEFAUT, langues=["en"])
+        self.actif, self.historique, self.etat_carte = True, [], "Active"
+        self.etat_grand_modele, self.etat_ia, self.niveau_qualite = "Actif", "Active", "maximale"
+        self.progression_installation, self.erreur_installation = None, ""
+        self.traducteur = types.SimpleNamespace(langues_vues={})
+        self._extension_affichee = set()
+
+    def __getattr__(self, nom):  # (les actions des boutons : rien à faire ici)
+        return lambda *a, **k: {"en"} if nom == "langues_choisies" else set() if nom == "navigateurs_extension" else None
+
+    def _nom_raccourci(self, action):
+        return "+".join(te.noms_des_touches(self.config[te.RACCOURCIS[action][0]]))
+
+
+racine_essai = te.ctk.CTk()
+racine_essai.withdraw()
+fenetre_essai = te.Reglages(racine_essai, FauxApp())
+verifier(list(fenetre_essai.onglets.pages) == ["Accueil", "Langues", "Apparence", "Plus"]
+         and fenetre_essai.qualite.get() == "Maximale (IA)"
+         and fenetre_essai.tuiles_raccourcis["zone"].cget("text") == "Ctrl+Alt+Z",
+         "fenêtre des réglages : 4 rubriques, qualité et raccourcis affichés", list(fenetre_essai.onglets.pages))
+racine_essai.destroy()
+# La qualité en un seul choix allume ou coupe chaque moyen (carte graphique, grand modèle, IA).
+appels_qualite = []
+app_qualite = types.SimpleNamespace(config={"carte_graphique": False, "grand_modele": False, "ia_locale": False},
+                                   reglages=types.SimpleNamespace(afficher_carte=lambda: None))
+for cle, nom in (("carte_graphique", "choisir_carte_graphique"), ("grand_modele", "choisir_grand_modele"),
+                 ("ia_locale", "choisir_ia")):
+    setattr(app_qualite, nom, lambda actif, cle=cle: (appels_qualite.append((cle, actif)),
+                                                      app_qualite.config.__setitem__(cle, actif)))
+niveaux_vus = []
+for niveau in ("maximale", "meilleure", "normale"):
+    te.Application.choisir_qualite(app_qualite, niveau)
+    niveaux_vus.append(te.Application.niveau_qualite.fget(app_qualite))
+verifier(niveaux_vus == ["maximale", "meilleure", "normale"] and appels_qualite == [
+    ("carte_graphique", True), ("grand_modele", True), ("ia_locale", True), ("ia_locale", False),
+    ("carte_graphique", False), ("grand_modele", False)], "qualité en un seul choix", (niveaux_vus, appels_qualite))
 # Bug : sur un clavier français (AZERTY), Ctrl+Alt+Z devenait Ctrl+Alt+W (la zone choisie ne marchait pas).
 verifier(te.touches_du_raccourci("ctrl+alt+z") == (3, 0x5A) and te.touches_du_raccourci("ctrl+alt+a") == (3, 0x41)
          and te.touches_du_raccourci("ctrl+shift+2") == (6, 0x32),

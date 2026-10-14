@@ -14,7 +14,7 @@ sur internet.
    fois, ensuite tout marche hors ligne.
 
 Le programme se met à jour tout seul : quand une nouvelle version sort, il propose « Mettre à jour ».
-Tous les raccourcis clavier se changent dans la rubrique « Options ».
+Tous les raccourcis clavier se changent dans la rubrique « Plus ».
 
 ## Ce qu'il sait faire
 
@@ -29,7 +29,7 @@ Tous les raccourcis clavier se changent dans la rubrique « Options ».
   l'anglais (japonais, coréen…).
 - **IA locale** en option (TranslateGemma 4B, intégrée : rien à installer) : retraduit les phrases avec leur sens et
   leurs expressions. Il faut une carte graphique (NVIDIA, AMD ou Intel) avec 4 Go.
-- « Options » → **Signaler un problème** : une page de ce dépôt préremplie, avec le journal à joindre.
+- « Plus » → **Signaler un problème** : une page de ce dépôt préremplie, avec le journal à joindre.
 
 ## Pour les développeurs
 

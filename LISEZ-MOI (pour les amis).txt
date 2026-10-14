@@ -33,40 +33,37 @@ C'EST PARTI
   (icône bleue, grise en pause). Clic droit dessus pour l'ouvrir ou le quitter.
 
 LES RUBRIQUES DU PROGRAMME (barre à gauche)
-  - Accueil : comment ça marche.
-  - Langues : ta langue, les langues que tu veux comprendre (« Choisir… »), et
-    la qualité des traductions (voir plus bas).
-  - Écrire : la langue de Ctrl + Alt + Entrée, et « Mes mots » : un mot à ne
-    jamais traduire (un nom, un pseudo…), ou un mot avec ta traduction.
-  - Historique : les dernières traductions, pour les relire ou les copier
-    (gardé seulement tant que le programme tourne).
+  - Accueil : marche / pause, tes langues, la qualité (voir plus bas) et les
+    raccourcis clavier.
+  - Langues : ta langue, les langues que tu veux comprendre (« Choisir… »), la
+    langue de Ctrl + Alt + Entrée, et « Mes mots » : un mot à ne jamais
+    traduire (un nom, un pseudo…), ou un mot avec ta traduction.
   - Apparence : couleur, taille et transparence des traductions.
-  - Où traduire : toutes les fenêtres, ou seulement certaines (un programme
-    à ne jamais traduire, par exemple).
-  - Sites internet : installer l'extension (voir plus bas).
-  - Options : lancer avec Windows, tous les raccourcis clavier, rapidité, et
-    « Signaler un problème ».
+  - Plus : où traduire (toutes les fenêtres, ou seulement certaines), les
+    sites internet (l'extension, voir plus bas), les raccourcis clavier, le
+    lancement avec Windows, l'historique des traductions et « Signaler un
+    problème ».
 
-QUALITÉ DES TRADUCTIONS (rubrique « Langues », chacun s'active ou se coupe)
-  - Carte graphique NVIDIA : si ton PC en a une, le programme s'en sert tout
-    seul pour traduire environ 10 fois plus vite (530 Mo, une seule fois).
-  - Grand modèle de traduction : bien meilleur pour le japonais, le chinois, le
-    coréen, l'espagnol… (3 Go, une seule fois ; il faut la carte graphique).
-  - IA locale (qualité maximale) : une IA sur ton PC retraduit les phrases avec
+QUALITÉ DES TRADUCTIONS (sur l'accueil, un seul choix)
+  - Normale : le processeur traduit, rien de plus à télécharger.
+  - Meilleure : la carte graphique NVIDIA (environ 10 fois plus rapide, 530 Mo
+    une seule fois) et le grand modèle de traduction, bien meilleur pour le
+    japonais, le chinois, le coréen, l'espagnol… (3 Go, une seule fois).
+  - Maximale (IA) : en plus, une IA sur ton PC retraduit les phrases avec
     leur sens et leurs expressions (« Break a leg » → « Bonne chance »). Rien
     à installer : l'IA (2,4 Go) se télécharge toute seule. Il faut une carte
     graphique (NVIDIA, AMD ou Intel) avec au moins 4 Go. La traduction rapide
     s'affiche d'abord, puis la meilleure la remplace juste après.
 
 UN PROBLÈME ?
-  « Options » → « Signaler un problème » : la page GitHub s'ouvre, préremplie,
+  « Plus » → « Signaler un problème » : la page GitHub s'ouvre, préremplie,
   et le fichier du journal s'affiche dans l'Explorateur. Décris ce qui s'est
   passé et glisse le fichier dans la page (il faut un compte GitHub, gratuit).
 
 SITES INTERNET : L'EXTENSION (recommandé)
   Avec elle, les sites sont traduits directement dans la page : plus net et
   plus rapide. Le programme doit être lancé.
-  Dans le programme, rubrique « Sites internet », suis les étapes :
+  Dans le programme, rubrique « Plus » → « Sites internet », suis les étapes :
    1. Dans le menu de ton navigateur, ouvre « Extensions » : la page qui les
       gère toutes.
    2. Active « Mode développeur » : l'interrupteur en haut à droite de cette

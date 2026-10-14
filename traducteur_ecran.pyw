@@ -167,6 +167,9 @@ STYLES = {
 NOMS_STYLES = {"auto": "Auto", "clair": "Clair", "sombre": "Sombre"}
 # Taille du texte des traductions : nom affiché, et facteur par rapport au texte d'origine.
 TAILLES = {"petite": ("Petite", 0.88), "normale": ("Normale", 1.0), "grande": ("Grande", 1.15)}
+# Qualité des traductions, en un seul choix : normale (le processeur), meilleure (la carte graphique NVIDIA et le
+# grand modèle de traduction), maximale (les deux, et l'IA locale). Voir Application.choisir_qualite.
+NIVEAUX_QUALITE = {"normale": "Normale", "meilleure": "Meilleure", "maximale": "Maximale (IA)"}
 # Réactivité : nom affiché, et secondes entre deux analyses de l'écran (juste après une action, au repos).
 REACTIVITES = {"econome": ("Économe", 0.3, 1.0), "normale": ("Normale", 0.1, 0.5), "rapide": ("Rapide", 0.05, 0.25)}
 # Combinaisons que tout le monde utilise déjà (copier, coller, fermer…) : refusées comme raccourci.
@@ -244,7 +247,9 @@ BLOC_IMAGE = 16  # côté (pixels) des blocs examinés pour repérer les photos 
 # Nombre de nouveaux textes traduits avant d'afficher un résultat partiel.
 TAILLE_PAQUET = 8
 
-ACCENT = "#6366F1"
+ACCENT = "#2563EB"  # bleu : boutons, interrupteurs, rubrique choisie
+ACCENT_SURVOL = "#1D4ED8"
+ACCENT_FONCE = "#1E40AF"
 
 # Constantes Win32
 GWL_EXSTYLE = -20
@@ -5006,16 +5011,11 @@ class Navigation:
     """Barre de navigation à gauche (une icône et un nom par rubrique), la rubrique choisie à droite.
     S'utilise comme les onglets de customtkinter : add(nom) -> page, get(), set(nom), tab(nom)."""
 
-    ICONES = {"Accueil": "", "Langues": "", "Écrire": "", "Historique": "", "Apparence": "",
-              "Où traduire": "", "Sites internet": "", "Options": ""}  # (police « Segoe MDL2 Assets »)
-    DESCRIPTIONS = {"Accueil": "Comment ça marche, en quelques secondes",
-                    "Langues": "Ta langue, celles à comprendre, et la qualité",
-                    "Écrire": "Écrire dans une autre langue, et tes mots",
-                    "Historique": "Les dernières traductions, à relire ou copier",
+    ICONES = {"Accueil": "", "Langues": "", "Apparence": "", "Plus": ""}  # (police « Segoe MDL2 Assets »)
+    DESCRIPTIONS = {"Accueil": "L'essentiel, en un coup d'œil",
+                    "Langues": "Ce que tu lis, ce que tu écris, et tes mots",
                     "Apparence": "L'allure des traductions",
-                    "Où traduire": "Toutes les fenêtres, ou seulement certaines",
-                    "Sites internet": "L'extension, pour des sites parfaitement traduits",
-                    "Options": "Démarrage, raccourcis clavier, rapidité"}
+                    "Plus": "Où traduire, sites internet, raccourcis, historique"}
     CHOISI = (ACCENT, ACCENT)
     SURVOL = ("#E2E4EC", "#232533")
 
@@ -5121,7 +5121,7 @@ class SelecteurZone:
             return
         (_, (x, y)) = self.depart
         if self.rectangle is None:
-            self.rectangle = self.toile.create_rectangle(x, y, e.x, e.y, fill=self.TRANSPARENT, outline="#818CF8",
+            self.rectangle = self.toile.create_rectangle(x, y, e.x, e.y, fill=self.TRANSPARENT, outline="#60A5FA",
                                                          width=2)
         else:
             self.toile.coords(self.rectangle, x, y, e.x, e.y)
@@ -5142,8 +5142,8 @@ class SelecteurZone:
 
 
 class Reglages:
-    """Fenêtre principale : à gauche la navigation, à droite la traduction en direct et la rubrique
-    choisie (langue, écrire, apparence, programmes, navigateur, général)."""
+    """Fenêtre principale : à gauche la navigation, à droite la rubrique choisie. Quatre rubriques : l'accueil
+    (marche / pause, langues, qualité, raccourcis), les langues, l'apparence, et « Plus » (le reste)."""
 
     GRIS = ("#6B7080", "#9AA0B4")
     CARTE = ("#F3F4F8", "#1C1E2A")
@@ -5180,40 +5180,22 @@ class Reglages:
         self.aide.pack(fill="x", pady=(0, 10))
         self._bouton_discret(pied, "Quitter le traducteur", app.quitter, 180).pack(fill="x")
 
-        # À droite : la traduction en direct, puis la rubrique choisie.
+        # À droite : la rubrique choisie, son titre puis son contenu.
         corps = ctk.CTkFrame(root, fg_color="transparent")
         corps.pack(side="left", fill="both", expand=True, padx=26, pady=(20, 22))
-
-        # Carte : activation
-        carte = self._carte(corps)
-        carte.pack_configure(pady=(0, 0))
-        ligne = ctk.CTkFrame(carte, fg_color="transparent")
-        ligne.pack(fill="x", padx=18, pady=(16, 2))
-        ctk.CTkLabel(ligne, text="Traduction en direct", font=ctk.CTkFont("Segoe UI", 15, "bold")).pack(side="left")
-        self.interrupteur = ctk.CTkSwitch(ligne, text="", command=app.basculer, width=52,
-                                          switch_width=46, switch_height=24, progress_color=ACCENT)
-        self.interrupteur.pack(side="right")
-        self.etat = ctk.CTkLabel(carte, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
-        self.etat.pack(fill="x", padx=18, pady=(0, 14))
-
-        # La rubrique choisie : son titre, puis son contenu.
         titre = ctk.CTkLabel(corps, text="", font=ctk.CTkFont("Segoe UI", 19, "bold"), anchor="w")
-        titre.pack(fill="x", pady=(18, 0))
+        titre.pack(fill="x")
         description = ctk.CTkLabel(corps, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
         description.pack(fill="x")
-        zone = ctk.CTkFrame(corps, width=440, height=372, fg_color="transparent")
-        zone.pack(fill="both", expand=True, pady=(8, 0))
+        zone = ctk.CTkFrame(corps, width=460, height=470, fg_color="transparent")
+        zone.pack(fill="both", expand=True, pady=(10, 0))
         zone.pack_propagate(False)
         onglets = Navigation(barre, zone, titre, description, self._onglet_change)
         self.onglets = onglets
         self._onglet_accueil(onglets.add("Accueil"))
         self._onglet_langue(onglets.add("Langues"))
-        self._onglet_ecrire(onglets.add("Écrire"))
-        self._onglet_historique(onglets.add("Historique"))
         self._onglet_apparence(onglets.add("Apparence"))
-        self._onglet_programmes(onglets.add("Où traduire"))
-        self._onglet_navigateur(onglets.add("Sites internet"))
-        self._onglet_general(onglets.add("Options"))
+        self._onglet_plus(onglets.add("Plus"))
         self.rafraichir()
 
     # ---- onglets
@@ -5225,7 +5207,7 @@ class Reglages:
         ctk.CTkOptionMenu(
             onglet, values=list(LANGUES), variable=self.langue, height=36,
             font=ctk.CTkFont("Segoe UI", 14), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color="#4F46E5", button_hover_color="#4338CA",
+            fg_color=ACCENT, button_color=ACCENT_SURVOL, button_hover_color=ACCENT_FONCE,
             command=lambda nom: app.choisir_langue(LANGUES[nom]),
         ).pack(fill="x", padx=6, pady=(6, 0))
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
@@ -5244,86 +5226,93 @@ class Reglages:
                                          justify="left", wraplength=290)
         self.etat_langues.pack(side="left", fill="x", expand=True)
         self.action_langues = ctk.CTkButton(ligne, text="", width=90, height=26, font=ctk.CTkFont("Segoe UI", 12),
-                                            fg_color=ACCENT, hover_color="#4F46E5")
+                                            fg_color=ACCENT, hover_color=ACCENT_SURVOL)
         self._ligne_etat_langues = ligne
         self.barre_langues = ctk.CTkProgressBar(onglet, height=6, progress_color=ACCENT)  # pendant un téléchargement
         self._langues_affichees = None
         self._note(onglet, "Seules ces langues sont traduites, hors ligne, sur ton PC. Jamais traduits : les "
                            "pseudos, les nombres, le code, le texte des images et des vidéos.")
-        # Qualité des traductions : chaque moyen s'active ou se coupe ici.
-        self._titre(onglet, "Qualité des traductions", 16)
-        self.carte_graphique, self.detail_carte = self._interrupteur(
-            onglet, "Carte graphique NVIDIA", "", lambda: self.app.choisir_carte_graphique(self.carte_graphique.get() == 1),
-            haut=6, avec_detail=True)
-        self.grand_modele, self.detail_grand_modele = self._interrupteur(
-            onglet, "Grand modèle de traduction", "",
-            lambda: self.app.choisir_grand_modele(self.grand_modele.get() == 1), haut=10, avec_detail=True)
-        self.ia_locale, self.detail_ia = self._interrupteur(
-            onglet, "IA locale (qualité maximale)", "", lambda: self.app.choisir_ia(self.ia_locale.get() == 1),
-            haut=10, avec_detail=True)
+        self._onglet_ecrire(onglet)
 
     def _onglet_accueil(self, onglet):
-        """Pour la première fois : ce qui est traduit vers quoi, puis comment ça marche, en quatre cartes."""
-        raccourci = self.app.config["raccourci"]
+        """L'essentiel sur une page : marche / pause, les langues, la qualité, les raccourcis, l'extension."""
+        app = self.app
         # Nouvelle version disponible (cachée tant qu'il n'y en a pas : voir montrer_mise_a_jour).
         self.carte_maj = ctk.CTkFrame(onglet, corner_radius=12, fg_color=(ACCENT, ACCENT))
         self.texte_maj = ctk.CTkLabel(self.carte_maj, text="", text_color="#FFFFFF", anchor="w",
                                       font=ctk.CTkFont("Segoe UI", 13, "bold"))
         self.texte_maj.pack(side="left", fill="x", expand=True, padx=(14, 6), pady=8)
         ctk.CTkButton(self.carte_maj, text="Mettre à jour", width=120, height=28, fg_color="#FFFFFF",
-                      text_color=ACCENT, hover_color="#E0E7FF", font=ctk.CTkFont("Segoe UI", 12, "bold"),
+                      text_color=ACCENT, hover_color="#DBEAFE", font=ctk.CTkFont("Segoe UI", 12, "bold"),
                       command=lambda: self.app.commandes.put(("installer_mise_a_jour",))).pack(side="right", padx=(0, 10))
+        # Marche / pause, en grand.
+        carte = self.carte_marche = ctk.CTkFrame(onglet, corner_radius=12, fg_color=self.CARTE)
+        carte.pack(fill="x", padx=6, pady=(0, 12))
+        ligne = ctk.CTkFrame(carte, fg_color="transparent")
+        ligne.pack(fill="x", padx=16, pady=14)
+        textes = ctk.CTkFrame(ligne, fg_color="transparent")
+        textes.pack(side="left", fill="x", expand=True)
+        self.titre_marche = ctk.CTkLabel(textes, text="", font=ctk.CTkFont("Segoe UI", 16, "bold"), anchor="w")
+        self.titre_marche.pack(fill="x")
+        self.etat = ctk.CTkLabel(textes, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
+        self.etat.pack(fill="x")
+        self.interrupteur = ctk.CTkSwitch(ligne, text="", command=app.basculer, width=58, switch_width=52,
+                                          switch_height=28, progress_color=ACCENT)
+        self.interrupteur.pack(side="right")
         # Les langues en un coup d'œil : « Anglais, Japonais  →  Français ».
-        bandeau = self.bandeau_langues = ctk.CTkFrame(onglet, corner_radius=12, fg_color=self.CARTE)
-        bandeau.pack(fill="x", padx=6, pady=(0, 8))
-        self.resume_langues = ctk.CTkLabel(bandeau, text="", font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w",
-                                           justify="left", wraplength=320)
-        self.resume_langues.pack(side="left", fill="x", expand=True, padx=(14, 6), pady=8)
-        self._bouton_discret(bandeau, "Modifier", lambda: self.onglets.set("Langues"), 84).pack(side="right",
-                                                                                                padx=(0, 10))
-        self._carte_aide(onglet, "", "Ton écran est traduit tout seul",
-                         "Le texte dans une autre langue est remplacé par sa traduction, directement par-dessus. "
-                         "Rien à faire : laisse le programme ouvert.")
+        bandeau = self.bandeau_langues = ctk.CTkFrame(onglet, fg_color="transparent")
+        bandeau.pack(fill="x", padx=6, pady=(0, 12))
+        self.resume_langues = ctk.CTkLabel(bandeau, text="", font=ctk.CTkFont("Segoe UI", 14), anchor="w",
+                                           justify="left", wraplength=340)
+        self.resume_langues.pack(side="left", fill="x", expand=True, padx=(4, 6))
+        self._bouton_discret(bandeau, "Changer", lambda: self.onglets.set("Langues"), 84).pack(side="right")
+        # La qualité, en un seul choix (voir Application.choisir_qualite).
+        ctk.CTkLabel(onglet, text="Qualité", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
+                     anchor="w").pack(fill="x", padx=10)
+        self.qualite = ctk.StringVar()
+        self._choix(onglet, NIVEAUX_QUALITE.values(), self.qualite,
+                    lambda v: app.choisir_qualite(next(c for c, nom in NIVEAUX_QUALITE.items() if nom == v)))
+        self.detail_qualite = ctk.CTkLabel(onglet, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
+                                           anchor="w", justify="left", wraplength=430)
+        self.detail_qualite.pack(fill="x", padx=10, pady=(4, 12))
+        # Les trois raccourcis, en tuiles.
+        tuiles = ctk.CTkFrame(onglet, fg_color="transparent")
+        tuiles.pack(fill="x", padx=6, pady=(0, 12))
+        self.tuiles_raccourcis = {}  # action -> étiquette de la combinaison
         self._raccourcis_affiches = None  # (redessinés avec les raccourcis choisis par rafraichir)
-        self.touches_pause = self._carte_aide(onglet, "", "Mettre en pause ou reprendre",
-                                              "Quand tu veux voir le texte d'origine.",
-                                              touches=noms_des_touches(raccourci))
-        self.touches_ecrire_accueil = self._carte_aide(
-            onglet, "", "Écrire dans une autre langue",
-            "Écris ton message en français, puis ces touches : il est traduit, prêt à envoyer.",
-            touches=noms_des_touches(self.app.config[RACCOURCIS["ecrire"][0]]))
-        self._carte_aide(onglet, "", "Sites internet : installe l'extension",
-                         "Les sites sont alors traduits directement dans la page.",
-                         bouton=("Installer", lambda: self.onglets.set("Sites internet")))
+        for colonne, (action, role) in enumerate((("pause", "Pause"), ("zone", "Traduire une zone"),
+                                                   ("ecrire", "Écrire traduit"))):
+            tuiles.grid_columnconfigure(colonne, weight=1, uniform="tuile")
+            tuile = ctk.CTkFrame(tuiles, corner_radius=10, fg_color=self.CARTE)
+            tuile.grid(row=0, column=colonne, sticky="ew", padx=(0 if colonne == 0 else 4, 0 if colonne == 2 else 4))
+            ctk.CTkLabel(tuile, text=role, text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 11),
+                         anchor="w").pack(fill="x", padx=10, pady=(8, 0))
+            touches = ctk.CTkLabel(tuile, text="", font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w")
+            touches.pack(fill="x", padx=10, pady=(0, 8))
+            self.tuiles_raccourcis[action] = touches
+        # Les sites internet : l'extension.
+        carte = ctk.CTkFrame(onglet, corner_radius=12, fg_color="transparent", border_width=1,
+                             border_color=("#D0D3DE", "#2A2C3A"))
+        carte.pack(fill="x", padx=6)
+        ctk.CTkLabel(carte, text="", width=30, font=ctk.CTkFont("Segoe MDL2 Assets", 17),
+                     text_color=self.GRIS).pack(side="left", padx=(12, 6), pady=10)
+        textes = ctk.CTkFrame(carte, fg_color="transparent")
+        textes.pack(side="left", fill="x", expand=True, pady=8)
+        ctk.CTkLabel(textes, text="Sites internet", font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(fill="x")
+        self.etat_extension_accueil = ctk.CTkLabel(textes, text="", text_color=self.GRIS, anchor="w",
+                                                   font=ctk.CTkFont("Segoe UI", 12))
+        self.etat_extension_accueil.pack(fill="x")
+        self.bouton_extension = ctk.CTkButton(carte, text="Installer", width=84, height=28, fg_color=ACCENT,
+                                              hover_color=ACCENT_SURVOL, font=ctk.CTkFont("Segoe UI", 12),
+                                              command=lambda: self.onglets.set("Plus"))
+        self.bouton_extension.pack(side="right", padx=12)
 
     def montrer_mise_a_jour(self, version):
         """Une nouvelle version est publiée : la carte « Mettre à jour » apparaît en haut de l'accueil."""
         self.texte_maj.configure(text=f"Nouvelle version {version} disponible")
         if not self.carte_maj.winfo_ismapped():
-            self.carte_maj.pack(fill="x", padx=6, pady=(0, 8), before=self.bandeau_langues)
+            self.carte_maj.pack(fill="x", padx=6, pady=(0, 8), before=self.carte_marche)
         self.onglets.ajuster_hauteur()
-
-    def _carte_aide(self, parent, icone, titre, texte, touches=None, bouton=None):
-        """Une carte de l'accueil : icône, titre, explication, et des touches ou un bouton."""
-        carte = ctk.CTkFrame(parent, corner_radius=12, fg_color=self.CARTE)
-        carte.pack(fill="x", padx=6, pady=(0, 8))
-        ctk.CTkLabel(carte, text=icone, width=34, font=ctk.CTkFont("Segoe MDL2 Assets", 18),
-                     text_color=ACCENT).pack(side="left", padx=(12, 6), pady=10, anchor="n")
-        droite = ctk.CTkFrame(carte, fg_color="transparent")
-        droite.pack(side="left", fill="both", expand=True, pady=8, padx=(0, 12))
-        haut = ctk.CTkFrame(droite, fg_color="transparent")
-        haut.pack(fill="x")
-        ctk.CTkLabel(haut, text=titre, font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(side="left")
-        rangee = None
-        if touches:
-            rangee = self._touches(haut, touches)
-            rangee.pack(side="right")
-        if bouton:
-            ctk.CTkButton(haut, text=bouton[0], width=84, height=26, fg_color=ACCENT, hover_color="#4F46E5",
-                          font=ctk.CTkFont("Segoe UI", 12), command=bouton[1]).pack(side="right")
-        ctk.CTkLabel(droite, text=texte, text_color=self.GRIS, anchor="w", justify="left", wraplength=360,
-                     font=ctk.CTkFont("Segoe UI", 12)).pack(fill="x")
-        return rangee
 
     def _touches(self, parent, touches):
         """Une combinaison dessinée comme des touches de clavier : [Ctrl] + [Alt] + [T]."""
@@ -5341,24 +5330,20 @@ class Reglages:
                          fg_color=("#FFFFFF", "#2A2C3A"), padx=8).pack(side="left")
 
     def _onglet_ecrire(self, onglet):
+        """« J'écris en » (le message traduit par Ctrl+Alt+Entrée) et « Mes mots », dans la rubrique « Langues »."""
         app = self.app
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
-        ligne.pack(fill="x", padx=6, pady=(4, 0))
+        ligne.pack(fill="x", padx=6, pady=(16, 0))
         ctk.CTkLabel(ligne, text="J'écris en", font=ctk.CTkFont("Segoe UI", 13, "bold")).pack(side="left")
         self.langue_ecriture = ctk.StringVar()
         ctk.CTkOptionMenu(
             ligne, values=list(LANGUES), variable=self.langue_ecriture, width=170, height=30,
             font=ctk.CTkFont("Segoe UI", 13), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color="#4F46E5", button_hover_color="#4338CA",
+            fg_color=ACCENT, button_color=ACCENT_SURVOL, button_hover_color=ACCENT_FONCE,
             command=lambda nom: app.choisir_langue_ecriture(LANGUES[nom])).pack(side="right")
-        # Le raccourci, dessiné comme des touches de clavier.
-        carte = ctk.CTkFrame(onglet, corner_radius=10, fg_color=self.CARTE)
-        carte.pack(fill="x", padx=6, pady=(10, 0))
-        self.touches_ecrire_page = self._touches(carte, noms_des_touches(app.config[RACCOURCIS["ecrire"][0]]))
-        self.touches_ecrire_page.pack(anchor="w", padx=12, pady=(10, 4))
-        ctk.CTkLabel(carte, text="Écris ton message dans n'importe quelle zone de texte, puis appuie sur ces touches : "
-                                 "il est remplacé par sa traduction, prête à envoyer.", text_color=self.GRIS, anchor="w",
-                     justify="left", wraplength=400, font=ctk.CTkFont("Segoe UI", 12)).pack(fill="x", padx=12, pady=(0, 10))
+        self.note_ecrire = ctk.CTkLabel(onglet, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
+                                        anchor="w", justify="left", wraplength=430)
+        self.note_ecrire.pack(fill="x", padx=6, pady=(6, 0))
 
         # « Mes mots » : ajouter un mot (et sa traduction, si on veut l'imposer), voir et retirer les siens.
         self._titre(onglet, "Mes mots", 14)
@@ -5370,7 +5355,7 @@ class Reglages:
         self.nouveau_mot.pack(side="left")
         self.nouvelle_traduction = ctk.CTkEntry(ajout, placeholder_text="Sa traduction (vide : jamais traduit)", **style)
         self.nouvelle_traduction.pack(side="left", fill="x", expand=True, padx=(6, 6))
-        ctk.CTkButton(ajout, text="Ajouter", width=76, height=32, fg_color=ACCENT, hover_color="#4F46E5",
+        ctk.CTkButton(ajout, text="Ajouter", width=76, height=32, fg_color=ACCENT, hover_color=ACCENT_SURVOL,
                       command=self._ajouter_mot).pack(side="right")
         for champ in (self.nouveau_mot, self.nouvelle_traduction):
             champ.bind("<Return>", lambda _e: self._ajouter_mot())
@@ -5427,19 +5412,27 @@ class Reglages:
                           fg_color="transparent", hover_color=("#ECEDF2", "#2A2C3A"), text_color=self.GRIS,
                           command=lambda l=ligne: self._retirer_mot(l)).pack(side="right")
 
+    def _onglet_plus(self, onglet):
+        """Tout le reste, en sections, sur une page qui défile."""
+        page = self.page_plus = ctk.CTkScrollableFrame(onglet, height=462, fg_color="transparent")
+        page.pack(fill="both", expand=True)
+        for titre, construire in (("Où traduire", self._onglet_programmes), ("Sites internet", self._onglet_navigateur),
+                                  ("Raccourcis et démarrage", self._onglet_general), ("Historique", self._onglet_historique)):
+            ctk.CTkLabel(page, text=titre, font=ctk.CTkFont("Segoe UI", 15, "bold"), anchor="w").pack(
+                fill="x", padx=6, pady=(4 if titre == "Où traduire" else 24, 0))
+            construire(page)
+
     def _onglet_historique(self, onglet):
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
         ligne.pack(fill="x", padx=6, pady=(4, 0))
         ctk.CTkLabel(ligne, text="Gardé seulement tant que le programme tourne, jamais enregistré.", anchor="w",
                      text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12)).pack(side="left")
         self._bouton_discret(ligne, "Effacer", self._effacer_historique, 76).pack(side="right")
-        self.liste_historique = ctk.CTkScrollableFrame(onglet, height=60, corner_radius=10,
-                                                       fg_color=("#FFFFFF", "#15161F"))
-        self.liste_historique._scrollbar.configure(height=60)
-        self.liste_historique.pack(fill="both", expand=True, padx=6, pady=(8, 0))
+        self.liste_historique = ctk.CTkFrame(onglet, corner_radius=10, fg_color=("#FFFFFF", "#15161F"))
+        self.liste_historique.pack(fill="x", padx=6, pady=(8, 0))
         self._historique_affiche = None
 
-    HISTORIQUE_AFFICHE = 60  # lignes au plus (les plus récentes) : la fenêtre reste rapide
+    HISTORIQUE_AFFICHE = 10  # lignes au plus (les plus récentes) : la page reste courte et rapide
 
     def afficher_historique(self):
         historique = list(self.app.historique)[-self.HISTORIQUE_AFFICHE:]
@@ -5492,7 +5485,7 @@ class Reglages:
         self.valeur_opacite = ctk.CTkLabel(ligne, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12))
         self.valeur_opacite.pack(side="right")
         self.opacite = ctk.CTkSlider(onglet, from_=40, to=100, number_of_steps=12, command=self._changer_opacite,
-                                     progress_color=ACCENT, button_color=ACCENT, button_hover_color="#4F46E5")
+                                     progress_color=ACCENT, button_color=ACCENT, button_hover_color=ACCENT_SURVOL)
         self.opacite.pack(fill="x", padx=6, pady=(6, 0))
         self.fondu = self._interrupteur(onglet, "Apparition en douceur", "Les traductions apparaissent en fondu",
                                         lambda: app.choisir_fondu(self.fondu.get() == 1))
@@ -5520,7 +5513,7 @@ class Reglages:
         ctk.CTkLabel(ligne, text=str(numero), width=24, height=24, corner_radius=12, fg_color=ACCENT,
                      text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 12, "bold")).pack(side="left", padx=(10, 10), pady=8)
         if bouton:
-            ctk.CTkButton(ligne, text=bouton, width=92, height=28, fg_color=ACCENT, hover_color="#4F46E5",
+            ctk.CTkButton(ligne, text=bouton, width=92, height=28, fg_color=ACCENT, hover_color=ACCENT_SURVOL,
                           font=ctk.CTkFont("Segoe UI", 12), command=commande).pack(side="right", padx=(6, 10))
         ctk.CTkLabel(ligne, text=texte, anchor="w", justify="left", wraplength=255 if bouton else 355,
                      font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", fill="x", expand=True, pady=6)
@@ -5540,7 +5533,6 @@ class Reglages:
 
     def _onglet_programmes(self, onglet):
         app = self.app
-        self._titre(onglet, "Programmes à traduire", 4)
         self.mode_programmes = ctk.StringVar()
         self._choix(onglet, MODES_PROGRAMMES.values(), self.mode_programmes,
                     lambda v: app.choisir_mode_programmes(next(c for c, nom in MODES_PROGRAMMES.items() if nom == v)))
@@ -5555,7 +5547,7 @@ class Reglages:
         self.menu_programmes.pack(side="left", fill="x", expand=True)
         self._bouton_discret(ligne, "Parcourir…", self._parcourir, 92).pack(side="right", padx=(6, 0))
         ctk.CTkButton(ligne, text="Ajouter", width=76, height=32, command=self._ajouter_programme,
-                      fg_color=ACCENT, hover_color="#4F46E5").pack(side="right", padx=(6, 0))
+                      fg_color=ACCENT, hover_color=ACCENT_SURVOL).pack(side="right", padx=(6, 0))
         self.liste_programmes = ctk.CTkFrame(onglet, corner_radius=10, fg_color=("#FFFFFF", "#15161F"))
         self.liste_programmes.pack(fill="x", padx=6, pady=(8, 0))
         self._liste_affichee = None
@@ -5616,7 +5608,7 @@ class Reglages:
 
     def _choix(self, parent, valeurs, variable, commande):
         ctk.CTkSegmentedButton(parent, values=list(valeurs), variable=variable, height=32,
-                               selected_color=ACCENT, selected_hover_color="#4F46E5",
+                               selected_color=ACCENT, selected_hover_color=ACCENT_SURVOL,
                                command=commande).pack(fill="x", padx=6, pady=(6, 0))
 
     def _interrupteur(self, parent, titre, detail, commande, haut=14, avec_detail=False):
@@ -5635,26 +5627,32 @@ class Reglages:
         return (interrupteur, explication) if avec_detail else interrupteur
 
     def afficher_carte(self):
-        """Les interrupteurs de la qualité des traductions (carte graphique, grand modèle, IA locale), et où chacun
-        en est."""
+        """La qualité choisie, et où en sont les moyens qu'elle utilise (carte graphique, grand modèle, IA)."""
         app = self.app
-        for interrupteur, detail, cle, etat, explication, actif in (
-                (self.carte_graphique, self.detail_carte, "carte_graphique", app.etat_carte,
-                 "Traductions environ 10 fois plus rapides", "✓ Active : traductions environ 10 fois plus rapides"),
-                (self.grand_modele, self.detail_grand_modele, "grand_modele", getattr(app, "etat_grand_modele", ""),
-                 "Bien meilleur, toutes langues · 3 Go, avec la carte graphique", "✓ Actif : toutes les langues"),
-                (self.ia_locale, self.detail_ia, "ia_locale", getattr(app, "etat_ia", ""),
-                 "Le sens et les expressions des phrases · 2,4 Go, avec la carte graphique",
-                 "✓ Active : le sens et les expressions")):
-            etat = etat or ("Désactivé" if not app.config.get(cle) else "")
-            (interrupteur.select if app.config.get(cle) and not etat.startswith("Pas de carte")
-             else interrupteur.deselect)()
-            if etat in ("Active", "Actif"):
-                texte, couleur = actif, ("#1E8E3E", "#5BD17F")
-            else:
-                texte, couleur = explication + (f" · {etat}" if etat else ""), self.GRIS
-            detail.configure(text=texte, text_color=couleur, wraplength=330, justify="left")
-            interrupteur.configure(state="disabled" if etat.startswith("Pas de carte") else "normal")
+        niveau = app.niveau_qualite
+        self.qualite.set(NIVEAUX_QUALITE[niveau])
+        moyens = [("Carte graphique", app.etat_carte), ("Grand modèle", getattr(app, "etat_grand_modele", ""))]
+        moyens = {"normale": [], "meilleure": moyens,
+                  "maximale": moyens + [("IA", getattr(app, "etat_ia", ""))]}[niveau]
+        en_attente = []
+        for nom, etat in moyens:
+            etat = etat or "préparation…"
+            if etat.startswith("Pas de carte NVIDIA"):
+                etat = "pas de carte NVIDIA, le processeur traduit"
+                if any(e.endswith(etat) for e in en_attente):
+                    continue
+                en_attente.append(etat[0].upper() + etat[1:])
+            elif etat not in ("Active", "Actif"):
+                en_attente.append(f"{nom} : {etat}")
+        if niveau == "normale":
+            texte, couleur = "Le processeur traduit : rien de plus à télécharger", self.GRIS
+        elif en_attente:
+            texte, couleur = " · ".join(en_attente), self.GRIS
+        else:
+            texte = ("✓ Carte graphique et grand modèle actifs" if niveau == "meilleure"
+                     else "✓ Tout est actif, avec l'IA : le sens et les expressions")
+            couleur = ("#1E8E3E", "#5BD17F")
+        self.detail_qualite.configure(text=texte, text_color=couleur)
 
     def _bouton_discret(self, parent, texte, commande, largeur):
         return ctk.CTkButton(parent, text=texte, width=largeur or 260, height=32, command=commande,
@@ -5667,13 +5665,14 @@ class Reglages:
         """État de la traduction en direct (appelé souvent : seulement l'en-tête)."""
         app = self.app
         (self.interrupteur.select if app.actif else self.interrupteur.deselect)()
+        self.titre_marche.configure(text="Traduction en marche" if app.actif else "Traduction en pause")
         if not app.actif:
-            texte = "En pause"
+            texte = "Ton écran garde son texte d'origine"
         elif not nombre:
-            texte = "Active"
+            texte = "Ton écran est traduit tout seul"
         else:
             pluriel = "s" if nombre > 1 else ""
-            texte = f"Active · {nombre} texte{pluriel} traduit{pluriel} à l'écran"
+            texte = f"{nombre} texte{pluriel} traduit{pluriel} à l'écran"
         self.etat.configure(text=texte)
 
     def rafraichir(self):
@@ -5698,19 +5697,25 @@ class Reglages:
             texte = (f"✓ Connectée ({navigateurs[0]}) : elle traduit ce navigateur" if len(navigateurs) == 1
                      else "✓ Connectée : " + ", ".join(navigateurs))
             self.etat_extension.configure(text=texte, text_color=("#1E8E3E", "#5BD17F"))
+            self.etat_extension_accueil.configure(text="✓ Extension connectée (" + ", ".join(navigateurs) + ")")
+            self.bouton_extension.pack_forget()
         else:
             self.etat_extension.configure(text="Pas encore installée (ou navigateur fermé)", text_color=self.GRIS)
+            self.etat_extension_accueil.configure(text="Pour des sites traduits dans la page")
+            if not self.bouton_extension.winfo_ismapped():
+                self.bouton_extension.pack(side="right", padx=12)
         self.reactivite.set(REACTIVITES[config["reactivite"]][0])
         self.afficher_carte()
         combinaisons ={action: config[cle] for action, (cle, _, _) in RACCOURCIS.items()}
         if combinaisons != self._raccourcis_affiches:  # (changés dans « Options » : partout les nouveaux)
             self._raccourcis_affiches = combinaisons
-            rangees = {action: [ligne[0]] for action, ligne in self.lignes_raccourcis.items()}
-            rangees["pause"].append(self.touches_pause)
-            rangees["ecrire"] += [self.touches_ecrire_accueil, self.touches_ecrire_page]
-            for action, liste in rangees.items():
-                for rangee in liste:
-                    self._dessiner_touches(rangee, noms_des_touches(combinaisons[action]))
+            for action, ligne in self.lignes_raccourcis.items():
+                self._dessiner_touches(ligne[0], noms_des_touches(combinaisons[action]))
+            for action, etiquette in self.tuiles_raccourcis.items():
+                etiquette.configure(text="+".join(noms_des_touches(combinaisons[action])))
+            self.note_ecrire.configure(
+                text=f"Écris ton message dans n'importe quelle zone de texte, puis {self.app._nom_raccourci('ecrire')} : "
+                     "il est remplacé par sa traduction, prête à envoyer.")
         for action, (_, etiquette, _) in self.lignes_raccourcis.items():
             etiquette.configure(text=RACCOURCIS[action][2])
         aide = [f"{'+'.join(noms_des_touches(combinaisons[action]))} : {role}"
@@ -5801,17 +5806,16 @@ class Reglages:
     # ---- actions
 
     def _onglet_change(self):
-        if self.onglets.get() == "Où traduire":
+        if self.onglets.get() == "Plus":
             self._mettre_a_jour_programmes()
-        elif self.onglets.get() == "Historique":
             self._suivre_historique()
 
     def _suivre_historique(self):
-        """Rubrique « Historique » ouverte et fenêtre visible : les nouvelles traductions s'y ajoutent."""
+        """Rubrique « Plus » (et son historique) ouverte et fenêtre visible : les nouvelles traductions s'y ajoutent."""
         if getattr(self, "_minuterie_historique", None):
             self.win.after_cancel(self._minuterie_historique)  # (une seule à la fois)
         self._minuterie_historique = None
-        if self.onglets.get() != "Historique" or not self.win.winfo_viewable():
+        if self.onglets.get() != "Plus" or not self.win.winfo_viewable():
             return
         self.afficher_historique()
         self._minuterie_historique = self.win.after(2000, self._suivre_historique)
@@ -5880,10 +5884,10 @@ class Reglages:
 
     def montrer(self):
         self.rafraichir()
-        if self.onglets.get() == "Où traduire":
+        if self.onglets.get() == "Plus":
             self._mettre_a_jour_programmes()
         self.win.deiconify()
-        if self.onglets.get() == "Historique":
+        if self.onglets.get() == "Plus":
             self.win.after(100, self._suivre_historique)
         # Windows refuse souvent de passer une fenêtre au premier plan : on la met
         # brièvement « toujours au-dessus » pour qu'elle apparaisse devant les autres.
@@ -5932,7 +5936,7 @@ class ChoixLangues:
         self.menu_cible = ctk.CTkOptionMenu(
             ligne, values=list(LANGUES), variable=self.cible, width=200, height=32,
             font=ctk.CTkFont("Segoe UI", 13), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color="#4F46E5", button_hover_color="#4338CA",
+            fg_color=ACCENT, button_color=ACCENT_SURVOL, button_hover_color=ACCENT_FONCE,
             command=lambda _: self._mettre_a_jour())
         self.menu_cible.pack(side="right")
 
@@ -5944,7 +5948,7 @@ class ChoixLangues:
         self.cases = {}
         for i, (nom, code) in enumerate(LANGUES.items()):
             case = ctk.CTkCheckBox(grille, text=nom, font=ctk.CTkFont("Segoe UI", 13), command=self._mettre_a_jour,
-                                   checkbox_width=20, checkbox_height=20, fg_color=ACCENT, hover_color="#4F46E5")
+                                   checkbox_width=20, checkbox_height=20, fg_color=ACCENT, hover_color=ACCENT_SURVOL)
             case.grid(row=i // self.COLONNES, column=i % self.COLONNES, sticky="w", padx=(14, 4),
                       pady=(10 if i < self.COLONNES else 3, 10 if i >= len(LANGUES) - self.COLONNES else 3))
             if code in choisies:
@@ -5961,7 +5965,7 @@ class ChoixLangues:
         boutons = self.boutons = ctk.CTkFrame(corps, fg_color="transparent")
         boutons.pack(fill="x", pady=(12, 0))
         self.bouton_valider = ctk.CTkButton(boutons, text="", width=200, height=36, fg_color=ACCENT,
-                                            hover_color="#4F46E5", font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                                            hover_color=ACCENT_SURVOL, font=ctk.CTkFont("Segoe UI", 13, "bold"),
                                             command=self._valider)
         self.bouton_valider.pack(side="right")
         self.bouton_fermer = app.reglages._bouton_discret(boutons, "Plus tard" if bienvenue else "Annuler",
@@ -7176,6 +7180,24 @@ class Application:
         if not self.config["ia_locale"]:  # (coupée entre-temps)
             ia.moteur.arreter()
         self.commandes.put(("etat_carte",))
+
+    @property
+    def niveau_qualite(self):
+        """« normale », « meilleure » ou « maximale », d'après les réglages."""
+        if self.config["ia_locale"]:
+            return "maximale"
+        return "meilleure" if self.config["carte_graphique"] or self.config["grand_modele"] else "normale"
+
+    def choisir_qualite(self, niveau):
+        """La qualité en un seul choix : chaque moyen (carte graphique, grand modèle, IA) s'allume ou se coupe."""
+        voulus = {"carte_graphique": niveau != "normale", "grand_modele": niveau != "normale",
+                  "ia_locale": niveau == "maximale"}
+        for cle, choisir in (("carte_graphique", self.choisir_carte_graphique),
+                             ("grand_modele", self.choisir_grand_modele), ("ia_locale", self.choisir_ia)):
+            if self.config[cle] != voulus[cle]:
+                choisir(voulus[cle])
+        log.info("Qualité choisie : %s", niveau)
+        self.reglages.afficher_carte()
 
     def choisir_ia(self, actif):
         self.config["ia_locale"] = actif
