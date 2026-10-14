@@ -153,6 +153,28 @@ verifier(pendant_glissement == "pack" and carte_page.winfo_manager() == "pack" a
          and not fenetre_essai.onglets._vue,
          "rubrique : la photo de la carte glisse, la vraie carte ne bouge pas et réapparaît",
          (pendant_glissement, avant_glissement, apres_glissement))
+# Bug : un clic sur une rubrique pendant la photo d'un glissement en lançait un second ; la photo de l'ancienne
+# rubrique restait collée par-dessus la carte (elle semblait ne plus changer).
+vraie_mise_a_jour, clic_pendant = carte_page.update, ["Apparence"]
+
+
+def mise_a_jour_avec_clic():
+    vraie_mise_a_jour()
+    if clic_pendant:
+        fenetre_essai.onglets._cliquer(clic_pendant.pop())
+
+
+carte_page.update = mise_a_jour_avec_clic
+fenetre_essai.onglets.set("Langues")
+carte_page.update = vraie_mise_a_jour
+fin_animation = time.monotonic() + 2
+while fenetre_essai.onglets._glissement and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+racine_essai.update()
+photos_restees = [w for w in racine_essai.winfo_children() if isinstance(w, te.tk.Label) and getattr(w, "image", None)]
+verifier(not photos_restees and not fenetre_essai.onglets._vue,
+         "rubrique : un clic pendant le glissement ne laisse pas de photo collée", photos_restees)
 verifier(choix_essai._glissement is None and abs(choix_essai.position - 2 * choix_essai._case()) < 1,
          "choix : la pastille glisse jusqu'au nouveau choix", (choix_essai.position, choix_essai._case()))
 verifier(relief_anime._animation is None and attendues is not None

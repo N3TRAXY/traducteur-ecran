@@ -5826,6 +5826,9 @@ class Navigation:
             photo = ImageTk.PhotoImage(ImageGrab.grab((x0, y0, x0 + largeur, y0 + hauteur), all_screens=True))
         except Exception:  # (fenêtre hors de l'écran, capture impossible : pas d'animation)
             return
+        # (Un clic arrivé pendant update() a pu lancer un autre glissement : il est arrêté, sinon sa photo restait
+        # collée par-dessus la carte, la rubrique semblait ne plus changer.)
+        self._fin_glissement()
         fond = FOND[ctk.get_appearance_mode() == "Dark"]
         x, y = carte.winfo_x(), carte.winfo_y()
         masque = tk.Frame(racine, bg=fond, bd=0, highlightthickness=0)
@@ -5836,6 +5839,8 @@ class Navigation:
         self._vue = (masque, vue)
 
         def etape(numero):
+            if self._vue != (masque, vue):  # (remplacé par un autre glissement)
+                return
             if numero <= etapes:
                 vue.place(x=x, y=y + round(distance * (1 - en_douceur(numero / etapes))), width=largeur, height=hauteur)
                 self._glissement = carte.after(duree // etapes, etape, numero + 1)
