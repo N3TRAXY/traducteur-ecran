@@ -5374,7 +5374,11 @@ class InterrupteurRelief(tk.Canvas):
     def __init__(self, parent, commande=None):
         self.echelle = parent._get_widget_scaling() if hasattr(parent, "_get_widget_scaling") else 1.0
         self.l, self.h = round(self.LARGEUR * self.echelle), round(self.HAUTEUR * self.echelle)
-        super().__init__(parent, width=self.l, height=self.h, highlightthickness=0, bd=0, cursor="hand2")
+        # (Un anneau de 2 px autour, bleu quand il a le focus du clavier : Tab, puis Espace ou Entrée.)
+        super().__init__(parent, width=self.l + 4, height=self.h + 4, highlightthickness=2, bd=0, cursor="hand2",
+                         takefocus=1, highlightcolor=ACCENT)
+        for touche in ("<space>", "<Return>"):
+            self.bind(touche, self._clic)
         self.commande, self.allume, self.actif = commande, False, True
         self.avance = 0.0  # 0 : éteint ; 1 : allumé (le rond peut dépasser un peu pendant le rebond)
         self._animation = None
@@ -5397,10 +5401,10 @@ class InterrupteurRelief(tk.Canvas):
         calque = Image.new("RGBA", image.size, (0, 0, 0, 0))
         calque.paste(bouton, (depart + round(course * self.avance), (self.h - bouton.height) // 2))
         image.alpha_composite(calque)
-        self.configure(bg=FOND[sombre])
+        self.configure(bg=FOND[sombre], highlightbackground=FOND[sombre])
         self._image = ImageTk.PhotoImage(image)
         self.delete("all")
-        self.create_image(0, 0, image=self._image, anchor="nw")
+        self.create_image(2, 2, image=self._image, anchor="nw")
 
     def _aller(self, allume, anime=True):
         self.allume = allume
@@ -5425,6 +5429,7 @@ class InterrupteurRelief(tk.Canvas):
         etape(1)
 
     def _clic(self, _evenement):
+        self.focus_set()
         if self.actif:
             self._aller(not self.allume)
             if self.commande:
@@ -5464,6 +5469,12 @@ class BoutonRelief(Relief):
             text_color="#FFFFFF" if accent else TEXTE)
         self.bouton.pack(fill="x")
         enfoncer(self, self.bouton)
+        toile = self.bouton._canvas
+        toile.configure(takefocus=1)
+        for touche in ("<space>", "<Return>"):
+            toile.bind(touche, lambda _e: self.bouton.invoke())
+        toile.bind("<FocusIn>", lambda _e: self.bouton.configure(border_width=2, border_color=ACCENT), add="+")
+        toile.bind("<FocusOut>", lambda _e: self.bouton.configure(border_width=0), add="+")
 
     def configure(self, require_redraw=False, **options):
         if "bouton" not in self.__dict__:  # (pendant la construction du cadre lui-même)
@@ -5474,15 +5485,135 @@ class BoutonRelief(Relief):
         return self.bouton.cget(option) if "bouton" in self.__dict__ else super().cget(option)
 
 
-def menu_relief(parent, valeurs, variable, commande, largeur=170, **options):
-    """Un menu déroulant en relief : (cadre en relief, menu)."""
-    relief = Relief(parent, rayon=12, decalage=2, flou=3, interieur=0)
-    menu = ctk.CTkOptionMenu(relief.dedans, values=valeurs, variable=variable, width=largeur, height=32,
-                             command=commande, corner_radius=10, font=ctk.CTkFont("Segoe UI", 13),
-                             dropdown_font=ctk.CTkFont("Segoe UI", 13), fg_color=FOND, button_color=FOND,
-                             button_hover_color=("#EDF1F6", "#2C3039"), text_color=TEXTE, **options)
-    menu.pack(fill="x")
-    return relief, menu
+class MenuRelief(BoutonRelief):
+    """Menu déroulant en relief : la valeur choisie et une flèche. Un clic (ou Espace / Entrée) ouvre la liste, qui
+    se déplie en glissant, dans une petite fenêtre en relief aux coins arrondis ; flèches haut / bas, Entrée pour
+    choisir, Échap ou un clic ailleurs pour fermer. S'utilise comme un CTkOptionMenu (configure(values=…))."""
+
+    HAUTEUR_LIGNE, LIGNES_MAX = 30, 9
+
+    def __init__(self, parent, valeurs, variable, commande, largeur=170):
+        super().__init__(parent, "", self.ouvrir, largeur)
+        self.valeurs, self.variable, self.commande = list(valeurs), variable, commande
+        self.bouton.configure(anchor="w", font=ctk.CTkFont("Segoe UI", 13))
+        self.bouton.pack_forget()
+        self.fleche = ctk.CTkLabel(self.dedans, text="⌄", width=22, text_color=ACCENT,
+                                   font=ctk.CTkFont("Segoe UI", 15, "bold"))
+        self.fleche.pack(side="right", padx=(0, 6))
+        self.fleche.bind("<Button-1>", lambda _e: self.ouvrir())
+        self.bouton.pack(side="left", fill="x", expand=True)
+        self.liste = None
+        variable.trace_add("write", lambda *_: self._afficher())
+        self._afficher()
+
+    def _afficher(self):
+        self.bouton.configure(text="  " + str(self.variable.get()))
+
+    def configure(self, require_redraw=False, **options):
+        if "values" in options:
+            self.valeurs = list(options.pop("values"))
+        if options:
+            super().configure(require_redraw, **options)
+
+    def ouvrir(self):
+        if self.liste is not None:
+            return self.fermer()
+        echelle = self._get_widget_scaling()
+        sombre = ctk.get_appearance_mode() == "Dark"
+        liste = self.liste = ctk.CTkToplevel(self)
+        liste.withdraw()
+        liste.overrideredirect(True)
+        liste.attributes("-topmost", True)
+        liste.configure(fg_color=FOND)
+        cadre = Relief(liste, rayon=14, decalage=2, flou=3)
+        cadre.pack(fill="both", expand=True)
+        lignes = min(len(self.valeurs), self.LIGNES_MAX)
+        defilant = ctk.CTkScrollableFrame(cadre.dedans, fg_color=FOND, corner_radius=0,
+                                          height=lignes * self.HAUTEUR_LIGNE, width=max(60, self.winfo_width() / echelle - 60))
+        defilant.pack(fill="both", expand=True)
+        self._etiquettes = []
+        for valeur in self.valeurs:
+            choisie = valeur == self.variable.get()
+            etiquette = ctk.CTkLabel(defilant, text="  " + valeur, anchor="w", height=self.HAUTEUR_LIGNE - 4,
+                                     corner_radius=8, fg_color=FOND, text_color=ACCENT if choisie else TEXTE,
+                                     font=ctk.CTkFont("Segoe UI", 13, "bold" if choisie else "normal"))
+            etiquette.pack(fill="x", pady=1)
+            etiquette.bind("<Enter>", lambda _e, e=etiquette: self._eclairer(e))
+            etiquette.bind("<Button-1>", lambda _e, v=valeur: self._choisir(v))
+            self._etiquettes.append(etiquette)
+        self._en_cours = self.valeurs.index(self.variable.get()) if self.variable.get() in self.valeurs else 0
+        # (Windows donne rarement le clavier à une petite fenêtre sans cadre : les touches sont écoutées sur la fenêtre
+        # principale, et la liste capte la souris, pour fermer au clic ailleurs.)
+        racine = self.winfo_toplevel()
+        self._touches = [(touche, racine.bind(touche, action, add="+")) for touche, action in (
+            ("<Escape>", lambda _e: self.fermer()), ("<Up>", lambda _e: self._deplacer(-1)),
+            ("<Down>", lambda _e: self._deplacer(1)), ("<Return>", lambda _e: self._choisir(self.valeurs[self._en_cours])))]
+        liste.bind("<Button-1>", self._clic_ailleurs, add="+")
+        liste.update_idletasks()
+        largeur, hauteur = self.winfo_width(), liste.winfo_reqheight()
+        x, y = self.winfo_rootx(), self.winfo_rooty() + self.winfo_height()
+        if y + hauteur > self.winfo_screenheight() - 40:
+            y = self.winfo_rooty() - hauteur  # (pas la place en dessous : au-dessus)
+        teindre_cadre(liste)
+        defilant._parent_canvas.yview_moveto(max(0, self._en_cours - 2) / max(1, len(self.valeurs)))
+        self._eclairer(self._etiquettes[self._en_cours])
+
+        def deplier(numero, etapes=8):  # (la liste se déplie vers le bas, en ralentissant)
+            if self.liste is not liste:
+                return
+            liste.geometry(f"{largeur}x{max(1, round(hauteur * en_douceur(numero / etapes)))}+{x}+{y}")
+            if numero == 1:
+                liste.deiconify()
+                try:
+                    liste.grab_set()
+                except tk.TclError:
+                    pass
+            if numero < etapes:
+                liste.after(18, deplier, numero + 1)
+
+        deplier(1)
+
+    def _eclairer(self, etiquette):
+        for autre in self._etiquettes:
+            autre.configure(fg_color=FOND_CREUX if autre is etiquette else FOND)
+        self._en_cours = self._etiquettes.index(etiquette)
+
+    def _deplacer(self, pas):
+        self._en_cours = max(0, min(len(self.valeurs) - 1, self._en_cours + pas))
+        self._eclairer(self._etiquettes[self._en_cours])
+
+    def _choisir(self, valeur):
+        self.fermer()
+        if valeur != self.variable.get():
+            self.variable.set(valeur)
+            if self.commande:
+                self.commande(valeur)
+
+    def _clic_ailleurs(self, evenement):
+        liste = self.liste
+        if liste is not None and not (liste.winfo_rootx() <= evenement.x_root < liste.winfo_rootx() + liste.winfo_width()
+                                      and liste.winfo_rooty() <= evenement.y_root < liste.winfo_rooty() + liste.winfo_height()):
+            self.fermer()
+
+    def fermer(self):
+        liste, self.liste = self.liste, None
+        if liste is None:
+            return
+        racine = self.winfo_toplevel()
+        for touche, ident in getattr(self, "_touches", ()):
+            racine.unbind(touche, ident)
+        self._touches = []
+        try:
+            liste.grab_release()
+        except tk.TclError:
+            pass
+        liste.destroy()
+
+
+def menu_relief(parent, valeurs, variable, commande, largeur=170, **_options):
+    """Un menu déroulant en relief : (le menu, le menu) — ancienne forme (cadre, menu) gardée."""
+    menu = MenuRelief(parent, valeurs, variable, commande, largeur)
+    return menu, menu
 
 
 def champ_creux(parent, **options):
@@ -5505,7 +5636,8 @@ class ChoixRelief(Relief):
         super().__init__(parent, etat="creux", rayon=14, marge=4, decalage=2, flou=3, interieur=4)
         self.variable, self.commande, self.valeurs = variable, commande, list(valeurs)
         echelle = self._get_widget_scaling()
-        self.toile = tk.Canvas(self.dedans, height=round(self.HAUTEUR * echelle), highlightthickness=0, bd=0)
+        self.toile = tk.Canvas(self.dedans, height=round(self.HAUTEUR * echelle) + 4, highlightthickness=2, bd=0,
+                               takefocus=1, highlightcolor=ACCENT)
         self.toile.pack(fill="x")
         self.position = None  # x de la pastille (pixels réels) ; None : pas encore placée
         self.survol = None  # indice du choix sous la souris
@@ -5515,6 +5647,8 @@ class ChoixRelief(Relief):
         self.toile.bind("<Button-1>", self._clic)
         self.toile.bind("<Motion>", self._bouger)
         self.toile.bind("<Leave>", lambda _e: self._bouger(None))
+        for touche, pas in (("<Left>", -1), ("<Right>", 1), ("<Up>", -1), ("<Down>", 1)):
+            self.toile.bind(touche, lambda _e, pas=pas: self._voisin(pas))
         variable.trace_add("write", lambda *_: self._aller())
         ctk.AppearanceModeTracker.add(lambda _mode: self._dessiner(), self)
 
@@ -5523,16 +5657,16 @@ class ChoixRelief(Relief):
         return self.valeurs.index(valeur) if valeur in self.valeurs else 0
 
     def _case(self):
-        return max(1, self.toile.winfo_width()) / len(self.valeurs)
+        return max(1, self.toile.winfo_width() - 4) / len(self.valeurs)
 
     def _dessiner(self):
         """Toute la toile : la pastille (à sa position) et les textes."""
         toile, echelle = self.toile, self._get_widget_scaling()
-        largeur, hauteur = toile.winfo_width(), toile.winfo_height()
+        largeur, hauteur = toile.winfo_width() - 4, toile.winfo_height() - 4  # (sans l'anneau du focus)
         if largeur < 10:
             return
         sombre = ctk.get_appearance_mode() == "Dark"
-        toile.configure(bg=FOND[sombre])
+        toile.configure(bg=FOND[sombre], highlightbackground=FOND[sombre])
         toile.delete("all")
         case = largeur / len(self.valeurs)
         if self.position is None or not self._glissement:
@@ -5541,11 +5675,11 @@ class ChoixRelief(Relief):
         marge = decalage + 2 * flou
         image = image_relief(round(case), hauteur, round(11 * echelle), False, sombre, marge, decalage, flou)
         self._pastille = ImageTk.PhotoImage(image)
-        toile.create_image(self.position, 0, image=self._pastille, anchor="nw", tags="pastille")
+        toile.create_image(2 + self.position, 2, image=self._pastille, anchor="nw", tags="pastille")
         choisi = self._indice()
         for i, valeur in enumerate(self.valeurs):
             couleur = ACCENT if i == choisi else (TEXTE if i == self.survol else ("#7A8499", "#8C93A6"))
-            toile.create_text((i + 0.5) * case, hauteur / 2, text=valeur, fill=couleur[sombre] if isinstance(
+            toile.create_text(2 + (i + 0.5) * case, 2 + hauteur / 2, text=valeur, fill=couleur[sombre] if isinstance(
                 couleur, tuple) else couleur, font=("Segoe UI", -round(12 * echelle), "bold" if i == choisi else "normal"))
 
     def _aller(self):
@@ -5562,7 +5696,7 @@ class ChoixRelief(Relief):
 
         def etape(numero):
             self.position = depart + (arrivee - depart) * en_douceur(numero / etapes)
-            self.toile.coords("pastille", self.position, 0)
+            self.toile.coords("pastille", 2 + self.position, 2)
             if numero < etapes:
                 self._glissement = self.after(self.DUREE // etapes, etape, numero + 1)
             else:
@@ -5574,13 +5708,22 @@ class ChoixRelief(Relief):
         etape(1)
 
     def _clic(self, evenement):
-        valeur = self.valeurs[min(len(self.valeurs) - 1, int(evenement.x // self._case()))]
+        self.toile.focus_set()
+        valeur = self.valeurs[min(len(self.valeurs) - 1, max(0, int((evenement.x - 2) // self._case())))]
         if valeur != self.variable.get():
             self.variable.set(valeur)
             self.commande(valeur)
 
+    def _voisin(self, pas):
+        """Flèches : le choix d'à côté."""
+        valeur = self.valeurs[max(0, min(len(self.valeurs) - 1, self._indice() + pas))]
+        if valeur != self.variable.get():
+            self.variable.set(valeur)
+            self.commande(valeur)
+        return "break"
+
     def _bouger(self, evenement):
-        survol = None if evenement is None else min(len(self.valeurs) - 1, int(evenement.x // self._case()))
+        survol = None if evenement is None else min(len(self.valeurs) - 1, max(0, int((evenement.x - 2) // self._case())))
         if survol != self.survol:
             self.survol = survol
             self.toile.configure(cursor="hand2" if survol is not None and survol != self._indice() else "")
@@ -5621,6 +5764,11 @@ class Navigation:
         morceaux = (element, element.fond, element.dedans, icone, texte)
         for morceau in morceaux:
             morceau.bind("<Button-1>", lambda _e, n=nom: self._cliquer(n))
+        tk.Frame.configure(element, takefocus=1)  # (Tab : d'une rubrique à l'autre ; Entrée ou Espace l'ouvre)
+        for touche in ("<Return>", "<space>"):
+            element.bind(touche, lambda _e, n=nom: self._cliquer(n))
+        element.bind("<FocusIn>", lambda _e, n=nom: self._survoler(n, True), add="+")
+        element.bind("<FocusOut>", lambda _e, n=nom: self._survoler(n, False), add="+")
         suivre_survol(element, morceaux, lambda n=nom: self._survoler(n, True), lambda n=nom: self._survoler(n, False))
         self.pages[nom], self.elements[nom] = page, (element, icone, texte)
         if self.actif is None:
