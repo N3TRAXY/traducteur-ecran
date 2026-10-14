@@ -601,6 +601,17 @@ te.ia_presente = sauve_presente
 verifier(etats_ia == ["Pas de carte graphique adaptée sur ce PC", "Désactivé", "téléchargement de 2,4 Go au premier usage",
                       "démarrage…", "Active"], "IA locale : état affiché sous l'interrupteur", etats_ia)
 
+# Lecture de l'image : une zone identique à la même place n'est pas relue (curseur qui clignote…) ; changée, si.
+lecteur_memoire = te.LecteurImage.__new__(te.LecteurImage)
+lecteur_memoire.memoire, lecteur_memoire.evitees, lectures_faites = collections.OrderedDict(), 0, []
+lecteur_memoire.lire = lambda pixels, origine, zone: lectures_faites.append(zone) or ["lu"]
+image_memoire = np.zeros((100, 200, 4), np.uint8)
+premiere_lecture = lecteur_memoire.lire_memoire(image_memoire, (0, 0), (0, 0, 200, 50))
+lecteur_memoire.lire_memoire(image_memoire, (0, 0), (0, 0, 200, 50))
+image_memoire[10, 10] = 255
+lecteur_memoire.lire_memoire(image_memoire, (0, 0), (0, 0, 200, 50))
+verifier(premiere_lecture == ["lu"] and len(lectures_faites) == 2 and lecteur_memoire.evitees == 1,
+         "lecture de l'image : zone identique pas relue, zone changée relue", (lectures_faites, lecteur_memoire.evitees))
 # Bugs trouvés à la relecture (2026-10-14) :
 # 1. un « [ » dans le texte coupait toute protection (nombres changés, texte abandonné) : les crochets sont protégés ;
 # 2. un nombre collé à du japonais protégeait toute la phrase (elle revenait sans être traduite) ;

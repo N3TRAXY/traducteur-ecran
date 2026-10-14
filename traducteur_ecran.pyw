@@ -46,6 +46,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from tkinter import filedialog
 import winreg
 from ctypes import wintypes
@@ -1824,6 +1825,25 @@ class LecteurImage:
         self.boucle = asyncio.new_event_loop()
         self.aides = None  # autres lecteurs, pour lire une grande zone à plusieurs (créés au premier besoin)
         self.parallele = None
+        self.memoire = collections.OrderedDict()  # (place, zone, empreinte des pixels) -> textes lus
+        self.evitees = 0  # lectures évitées par la mémoire (pour le relevé du journal)
+
+    MEMOIRE = 48  # zones gardées
+
+    def lire_memoire(self, pixels, origine, zone):
+        """Comme lire, mais une zone déjà lue à la même place et identique pixel pour pixel (curseur qui clignote,
+        bouton survolé puis quitté, animation qui revient) redonne son résultat sans relire : ~250 ms gagnées."""
+        x1, y1, x2, y2 = zone
+        cle = (origine, zone, zlib.crc32(np.ascontiguousarray(pixels[y1:y2, x1:x2])))
+        if cle in self.memoire:
+            self.memoire.move_to_end(cle)
+            self.evitees += 1
+            return self.memoire[cle]
+        lus = self.lire(pixels, origine, zone)
+        self.memoire[cle] = lus
+        while len(self.memoire) > self.MEMOIRE:
+            self.memoire.popitem(last=False)
+        return lus
 
     def lire(self, pixels, origine, zone=None):
         """Morceaux de texte de l'image (ou seulement de la zone (x1, y1, x2, y2) de l'image),
@@ -2672,7 +2692,7 @@ class SuiviEcran:
         grande = (zone[2] - zone[0]) * (zone[3] - zone[1]) >= 0.3 * hauteur * largeur
         images_en_cours = self.parallele.submit(zones_images, pixels, zone) if grande else None
         nouveaux = []  # (texte lu, cadre dans l'image, anciens textes qu'il remplace)
-        lus = self.ocr.lire(pixels, origine, zone)
+        lus = self.ocr.lire_memoire(pixels, origine, zone)
         if zone[0] > 0 or zone[2] < largeur:
             # Une ligne coupée par le bord gauche ou droit de la zone : la bande est relue sur toute la largeur.
             if any((m.x - ox <= zone[0] + 2 and zone[0] > 0) or (m.x - ox + m.l >= zone[2] - 2 and zone[2] < largeur)
@@ -8252,11 +8272,15 @@ class Application:
                     # Relevé dans le journal, pour comprendre ce qui est traduit ou non, et le temps pris.
                     self._dernier_releve = debut
                     mesures, self.mesures = self.mesures, {"image": [], "traduction": [], "accessibilite": []}
+                    ocr = getattr(getattr(self, "suivi", None), "ocr", None)
+                    evitees = ocr.evitees if ocr else 0
+                    if ocr:
+                        ocr.evitees = 0
                     log.info("Relevé : %d éléments vus par l'accessibilité, %d morceaux dans l'image, "
-                             "%d textes à traduire, %d traductions affichées ; lecture de l'image %s ; "
-                             "accessibilité %s ; traduction de %d textes nouveaux %s",
+                             "%d textes à traduire, %d traductions affichées ; lecture de l'image %s "
+                             "(%d évitées) ; accessibilité %s ; traduction de %d textes nouveaux %s",
                              len(lecteur.vus), len(self.textes_image), len(textes), len(self.calque.affiches),
-                             duree_moyenne(mesures["image"]), duree_moyenne(mesures["accessibilite"]),
+                             duree_moyenne(mesures["image"]), evitees, duree_moyenne(mesures["accessibilite"]),
                              sum(n for n, _ in mesures["traduction"]),
                              duree_moyenne([d for _, d in mesures["traduction"]]))
                 # Ce qui est déjà traduit s'affiche tout de suite ; le reste arrive par petits paquets,
