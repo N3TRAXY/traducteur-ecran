@@ -3796,6 +3796,7 @@ class MoteurIA:
                 essai.bind(("127.0.0.1", 0))
                 self.port = essai.getsockname()[1]
             self.cle = secrets.token_hex(16)
+            self.servi_le = time.monotonic()  # (pendant qu'il démarre, il n'est pas « sans travail » : en_veille l'attend)
             # (Le modèle est désigné depuis son dossier : un chemin avec des lettres d'une autre langue que celle de
             # Windows, dans le nom d'utilisateur, ne passerait pas.)
             with open(os.path.join(DOSSIER_IA, "journal-moteur.txt"), "wb") as journal:

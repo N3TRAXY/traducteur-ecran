@@ -10,6 +10,7 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -439,6 +440,45 @@ verifier(te.choisir_carte_ia(liste_cartes) == ("Vulkan1", "AMD Radeon RX 7800 XT
          and te.choisir_carte_ia(petite_carte) is None and te.choisir_carte_ia("Available devices:\n") is None,
          "IA locale : vraie carte graphique avec 4 Go, jamais la puce du processeur",
          (te.choisir_carte_ia(liste_cartes), te.choisir_carte_ia(petite_carte)))
+# Bug corrigé : le moteur qui démarre n'est pas « sans travail depuis 15 min » (en_veille l'arrêtait aussitôt prêt).
+moteur_essai = te.MoteurIA()
+moteur_essai.carte = ("Vulkan0", "essai")
+inactif_au_demarrage = []
+
+
+class FauxProcessus:
+    pid, returncode, _handle = 1, None, 0
+
+    def poll(self):
+        return None
+
+
+class FausseSante:
+    """Réponse « /health » : note si le moteur passait pour inactif pendant son démarrage."""
+
+    def __enter__(self):
+        inactif_au_demarrage.append(time.monotonic() - moteur_essai.servi_le > te.VEILLE_IA)
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+sauve_popen, sauve_lier, sauve_dossier = te.subprocess.Popen, te.lier_au_programme, te.DOSSIER_IA
+te.subprocess.Popen = lambda *a, **k: FauxProcessus()
+te.lier_au_programme = lambda processus: None
+te.DOSSIER_IA = tempfile.mkdtemp()
+moteur_essai.ouvreur = types.SimpleNamespace(open=lambda *a, **k: FausseSante())
+try:
+    moteur_essai.demarrer()
+finally:
+    te.subprocess.Popen, te.lier_au_programme = sauve_popen, sauve_lier
+    shutil.rmtree(te.DOSSIER_IA, ignore_errors=True)
+    te.DOSSIER_IA = sauve_dossier
+moteur_essai.en_veille()
+verifier(inactif_au_demarrage == [False] and moteur_essai.processus is not None,
+         "IA locale : le moteur qui démarre n'est pas arrêté par la veille", inactif_au_demarrage)
+moteur_essai.processus = None
 # Ce que dit l'interrupteur de l'IA : pas de carte (même coupée), coupée, à télécharger, démarrage, active.
 etat_app = types.SimpleNamespace(config={"ia_locale": False}, ia=types.SimpleNamespace(etat="", moteur=te.MoteurIA()))
 sauve_presente = te.ia_presente
