@@ -843,7 +843,7 @@ GLOSSAIRE_INTERFACE_FR = {
     "add to cart": "Ajouter au panier", "add to wishlist": "Ajouter à la liste de souhaits", "buy now": "Acheter maintenant",
     "checkout": "Paiement", "sign in": "Se connecter", "log in": "Se connecter", "login": "Connexion",
     "sign up": "S'inscrire", "register": "S'inscrire", "log out": "Se déconnecter", "sign out": "Se déconnecter",
-    "logout": "Déconnexion", "followers": "Abonnés", "following": "Abonnements", "follow": "Suivre",
+    "logout": "Déconnexion", "description": "Description", "invite me": "M'inviter", "followers": "Abonnés", "following": "Abonnements", "follow": "Suivre",
     "unfollow": "Ne plus suivre", "subscribe": "S'abonner", "subscribed": "Abonné", "unsubscribe": "Se désabonner",
     "open": "Ouvrir", "open project": "Ouvrir le projet", "open file": "Ouvrir le fichier", "save": "Enregistrer",
     "save changes": "Enregistrer les modifications", "cancel": "Annuler", "delete": "Supprimer", "remove": "Retirer",
@@ -1135,6 +1135,8 @@ def sans_emojis_autour(texte):
 def ressemble_a_un_pseudo(texte, photo_a_cote):
     """Pseudo ou nom propre (à ne pas traduire) ? `photo_a_cote()` dit si une photo de
     profil est juste à côté du texte."""
+    if libelle_du_glossaire(texte):
+        return False  # « Logout » : un mot inconnu du dictionnaire, mais un libellé connu
     mots = texte.split()
     if a_des_caracteres_decoratifs(texte) and len(mots) <= 6:
         coeur = sans_emojis_autour(texte)
@@ -3112,7 +3114,7 @@ class Traducteur:
     CONFIANCE_DEJA_TRADUIT = 0.35  # le texte ressemble déjà assez à la langue voulue
 
     MOTS_PHRASE = 2  # à partir de ce nombre de mots, un texte va au grand modèle s'il existe
-    VERSION_CACHE = 7  # à changer quand les modèles changent : les anciennes traductions sont oubliées
+    VERSION_CACHE = 8  # à changer quand les modèles ou les règles changent : les anciennes traductions sont oubliées
 
     def __init__(self, langues=(), mots=()):
         self.detecteur = DetecteurLangue()
@@ -3341,7 +3343,10 @@ class Traducteur:
                 self.cache[(texte, cible)] = entier
                 continue
             try:
-                source = self._langue_a_traduire(self._normal(texte), cible)
+                # Un libellé du glossaire est de l'anglais, même trop court ou ambigu pour le détecteur (« Logout »,
+                # « Invite Me »).
+                source = "en" if cible == "fr" and "en" in self.langues and libelle_du_glossaire(texte) \
+                    else self._langue_a_traduire(self._normal(texte), cible)
             except Exception:  # un texte qui fait échouer la détection ne bloque pas les autres
                 log.exception("Langue de « %s » introuvable", texte[:80])
                 source = None
@@ -3379,6 +3384,19 @@ class Traducteur:
                         resultats[i] = traduit
                 except Exception:
                     log.exception("Nouvel essai avec les nombres protégés impossible")
+            # Un libellé avec une majuscule à chaque mot recopié tel quel (« Help Desk », « World Store » : pris pour
+            # un nom de marque) : retraduit écrit comme une phrase (« Help desk » -> « Service d'assistance »).
+            recopies = [i for i, (texte, traduit) in enumerate(zip(lot, resultats))
+                        if traduit and traduit.casefold() == texte.casefold() and 2 <= len(texte.split()) <= 4
+                        and texte.istitle()]
+            if recopies:
+                try:
+                    for i, traduit in zip(recopies, self._traduire_avec_reperes(
+                            [" ".join([lot[i].split()[0]] + [m.lower() for m in lot[i].split()[1:]]) for i in recopies],
+                            source, cible, self.mots, argot=source == "en")):
+                        resultats[i] = traduit
+                except Exception:
+                    log.exception("Nouvel essai en minuscules impossible")
             for texte, traduit in zip(lot, resultats):
                 if traduit and not memes_chiffres(texte, traduit):
                     traduit = None  # la traduction a changé un nombre : on garde le texte d'origine
@@ -3471,6 +3489,11 @@ class Traducteur:
             anglais = sum(frequence_mot(m, "en") for m in mots) / len(mots)
             voulu = sum(frequence_mot(m, cible) for m in mots) / len(mots)
             if anglais >= 3.0 and anglais - voulu >= (0.8 if len(mots) <= 3 else 1.2):
+                return "en"
+            # Un libellé de deux ou trois mots dont l'un est nettement anglais, les autres existant aussi dans la
+            # langue voulue (« World Info », « Public Link » : « info », « public » sont aussi français).
+            if 2 <= len(mots) <= 3 and anglais > voulu and any(
+                    frequence_mot(m, "en") - frequence_mot(m, cible) >= 1.0 for m in mots):
                 return "en"
         # Japonais et coréen se reconnaissent à leur écriture, même en un seul mot (« 利用規約 » seul
         # est en caractères chinois, partagés par les deux langues : le détecteur tranche).

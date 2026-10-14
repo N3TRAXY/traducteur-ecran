@@ -496,6 +496,16 @@ verifier(etats_ia == ["Pas de carte graphique adaptée sur ce PC", "Désactivé"
 print("Traductions (vrais modèles)")
 installees = te.langues_installees("fr")
 traducteur = te.Traducteur(installees)
+# Bugs du site VRChat (2026-10-14) : « Logout » pris pour un pseudo, « Description » devenu « Désignation des
+# marchandises », libellés en mots anglais qui existent aussi en français (« World Info », « Public Link ») gardés en
+# anglais, « Help Desk » et « World Store » recopiés tels quels par le modèle.
+libelles_vrchat = ["Logout", "Description", "World Info", "Public Link", "Help Desk", "World Store", "Favorite Avatars",
+                   "Invite Me"]
+traduits_vrchat = traducteur.traduire(libelles_vrchat, "fr", filtre=te.texte_de_page_a_traduire)
+verifier(traduits_vrchat[0] == "Déconnexion" and traduits_vrchat[1] in (None, "Description")
+         and all(traduits_vrchat[2:]),
+         "site VRChat : boutons courts traduits, « Description » reste « Description »",
+         list(zip(libelles_vrchat, traduits_vrchat)))
 traducteur.prechauffer("fr")
 verifier(("en", "fr") in traducteur.modeles, "modèles anglais → français préchargés à l'activation")
 CAS = [
