@@ -4627,6 +4627,18 @@ class Calque:
         commun = surface_commune((a.x, a.y, a.x + a.l, a.y + a.h), (b.x, b.y, b.x + b.l, b.y + b.h))
         return commun > 0.5 * min(a.l * a.h, b.l * b.h)
 
+    @staticmethod
+    def _presque_pareil(ancienne, nouvelle, ecart=8):
+        """Deux dispositions de la même traduction (mêmes lignes, même style) à quelques pixels près : place,
+        taille et couleurs (mesurées sur des cadres un peu différents) presque égales."""
+        if not ancienne or not nouvelle:
+            return False
+        lignes_a, taille_a, xa, ya, la, ha, fond_a, encre_a, *reste_a = ancienne
+        lignes_b, taille_b, xb, yb, lb, hb, fond_b, encre_b, *reste_b = nouvelle
+        return (lignes_a == lignes_b and reste_a == reste_b and abs(taille_a - taille_b) <= 1
+                and max(abs(xa - xb), abs(ya - yb), abs(la - lb), abs(ha - hb)) <= ecart
+                and all(abs(p - q) <= 16 for p, q in zip(tuple(fond_a) + tuple(encre_a), tuple(fond_b) + tuple(encre_b))))
+
     def preparer(self, textes, traductions, couleurs, obstacles=()):
         """Met en page et dessine les traductions (dans le fil de traduction : la fenêtre
         principale n'a plus qu'à les afficher). `obstacles` : tous les textes lus à l'écran,
@@ -4680,9 +4692,14 @@ class Calque:
                     continue
                 voisins = [a for a in partants if self._meme_place(a, texte)]
                 identique = next((a for a in voisins if self.dispositions.get(a) == disposition), None)
-                if identique is not None:
-                    vitre = partants.pop(identique)
-                    self.dispositions.pop(identique, None)
+                # Même traduction dessinée pareil, à quelques pixels près : le même texte lu tantôt par
+                # l'accessibilité, tantôt par l'image (leurs cadres diffèrent un peu). La vitre reste où elle est,
+                # au lieu d'être reposée à chaque relecture (les traductions clignotaient : VRChat Creator Companion).
+                proche = identique or next((a for a in voisins if self._presque_pareil(self.dispositions.get(a),
+                                                                                       disposition)), None)
+                if proche is not None:
+                    vitre = partants.pop(proche)
+                    disposition = self.dispositions.pop(proche, None) or disposition
                 else:
                     vitre = self._vitre()
                     vitre.montrer(image, disposition[2], disposition[3], fondu=self.fondu and not voisins)

@@ -601,6 +601,23 @@ te.ia_presente = sauve_presente
 verifier(etats_ia == ["Pas de carte graphique adaptée sur ce PC", "Désactivé", "téléchargement de 2,4 Go au premier usage",
                       "démarrage…", "Active"], "IA locale : état affiché sous l'interrupteur", etats_ia)
 
+# Bug (VRChat Creator Companion) : le même texte lu tantôt par l'accessibilité, tantôt par l'image (cadres décalés de
+# quelques pixels) faisait reposer sa traduction à chaque relecture : elle clignotait. La vitre reste.
+calque_clignote = te.Calque.__new__(te.Calque)
+calque_clignote.visible, calque_clignote.generation, calque_clignote.fondu = True, 0, False
+calque_clignote.affiches, calque_clignote.dispositions, vitres_rendues = {}, {}, []
+calque_clignote._vitre = lambda: types.SimpleNamespace(montrer=lambda *a, **k: None)
+calque_clignote._rendre = vitres_rendues.append
+par_accessibilite = te.Texte("Logs", 319, 763, 35, 22, "morceau", (0, 0, 2000, 2000), "creatorcompanion.exe")
+par_image = te.Texte("Logs", 324, 760, 36, 23, "morceau", (0, 0, 2000, 2000), "creatorcompanion.exe")
+disposition_a = ((("Journaux",),), 15, 315, 759, 70, 30, (30, 30, 30), (230, 230, 230), False, 100, False)
+disposition_b = ((("Journaux",),), 15, 320, 756, 70, 31, (32, 31, 30), (228, 230, 231), False, 100, False)
+calque_clignote.mettre_a_jour([(par_accessibilite, disposition_a, None)])
+vitre_avant = calque_clignote.affiches[par_accessibilite]
+calque_clignote.mettre_a_jour([(par_image, disposition_b, None)])
+verifier(calque_clignote.affiches.get(par_image) is vitre_avant and not vitres_rendues
+         and calque_clignote.dispositions[par_image] == disposition_a,
+         "traduction relue à quelques pixels près : la même vitre reste (plus de clignotement)", vitres_rendues)
 # Lecture de l'image : une zone identique à la même place n'est pas relue (curseur qui clignote…) ; changée, si.
 lecteur_memoire = te.LecteurImage.__new__(te.LecteurImage)
 lecteur_memoire.memoire, lecteur_memoire.evitees, lectures_faites = collections.OrderedDict(), 0, []
