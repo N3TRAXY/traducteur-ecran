@@ -5761,12 +5761,15 @@ class Reglages:
         except tk.TclError:
             pass
 
-        # À gauche : le logo, la navigation, les raccourcis et « Quitter ».
-        barre = ctk.CTkFrame(root, width=212, corner_radius=0, fg_color=FOND)
-        barre.pack(side="left", fill="y")
+        # Deux grandes cartes en relief : à gauche le logo, la navigation, les raccourcis et « Quitter » ; à droite
+        # la rubrique choisie.
+        carte_barre = Relief(root, rayon=22, decalage=4, flou=6)
+        carte_barre.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        barre = ctk.CTkFrame(carte_barre.dedans, width=196, corner_radius=0, fg_color=FOND)
+        barre.pack(fill="y", expand=True)
         barre.pack_propagate(False)
         entete = ctk.CTkFrame(barre, fg_color="transparent")
-        entete.pack(fill="x", padx=16, pady=(20, 18))
+        entete.pack(fill="x", padx=8, pady=(2, 14))
         self.logo = ctk.CTkImage(dessiner_icone(128), size=(38, 38))
         ctk.CTkLabel(entete, image=self.logo, text="").pack(side="left")
         titres = ctk.CTkFrame(entete, fg_color="transparent")
@@ -5775,15 +5778,17 @@ class Reglages:
         ctk.CTkLabel(titres, text="d'écran", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
                      anchor="w").pack(fill="x")
         pied = ctk.CTkFrame(barre, fg_color="transparent")
-        pied.pack(side="bottom", fill="x", padx=16, pady=(0, 18))
+        pied.pack(side="bottom", fill="x", padx=8, pady=(0, 2))
         self.aide = ctk.CTkLabel(pied, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 11),
                                  justify="left", anchor="w", wraplength=176)
         self.aide.pack(fill="x", pady=(0, 10))
         self._bouton_discret(pied, "Quitter le traducteur", app.quitter, 180).pack(fill="x")
 
         # À droite : la rubrique choisie, son titre puis son contenu.
-        corps = ctk.CTkFrame(root, fg_color="transparent")
-        corps.pack(side="left", fill="both", expand=True, padx=26, pady=(20, 22))
+        carte_corps = Relief(root, rayon=22, decalage=4, flou=6)
+        carte_corps.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=8)
+        corps = ctk.CTkFrame(carte_corps.dedans, fg_color="transparent")
+        corps.pack(fill="both", expand=True, padx=8, pady=(2, 4))
         titre = ctk.CTkLabel(corps, text="", font=ctk.CTkFont("Segoe UI", 19, "bold"), anchor="w")
         titre.pack(fill="x")
         description = ctk.CTkLabel(corps, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
