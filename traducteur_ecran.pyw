@@ -5069,6 +5069,8 @@ class Relief(ctk.CTkFrame):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
         retrait = marge + (rayon // 2 if interieur is None else interieur)
+        if etat == "creux":  # (le contenu commence après l'ombre intérieure : il ne la coupe pas en angle)
+            retrait = max(retrait, marge + decalage + round(1.2 * flou) + 1)
         self.dedans = ctk.CTkFrame(self, fg_color=FOND, corner_radius=0)
         self.dedans.grid(row=0, column=0, sticky="nsew", padx=retrait, pady=retrait)  # (créé après : au-dessus)
         self._dessine = None
@@ -5099,7 +5101,7 @@ class ChoixRelief(Relief):
     """Plusieurs choix dans un rail creusé ; le choix en cours est en relief (remplace CTkSegmentedButton)."""
 
     def __init__(self, parent, valeurs, variable, commande):
-        super().__init__(parent, etat="creux", rayon=14, marge=4, decalage=3, flou=5, interieur=4)
+        super().__init__(parent, etat="creux", rayon=14, marge=4, decalage=2, flou=3, interieur=4)
         self.variable, self.commande, self.options = variable, commande, {}
         for colonne, valeur in enumerate(valeurs):
             self.dedans.grid_columnconfigure(colonne, weight=1, uniform="choix")
@@ -5147,7 +5149,8 @@ class Navigation:
 
     def add(self, nom):
         page = ctk.CTkFrame(self.zone, fg_color="transparent")
-        element = Relief(self.barre, etat="plat", rayon=12, marge=6, decalage=3, flou=5, interieur=3)
+        element = Relief(self.barre, etat="creux", rayon=12, marge=4, decalage=2, flou=3, interieur=3)
+        element.changer("plat")  # (marges d'un élément creusé : la rubrique choisie le devient sans bouger)
         element.pack(fill="x", padx=8, pady=1)
         icone = ctk.CTkLabel(element.dedans, text=self.ICONES.get(nom, ""), width=26,
                              font=ctk.CTkFont("Segoe MDL2 Assets", 15))
