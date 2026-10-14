@@ -5433,17 +5433,18 @@ class Navigation:
         self.description.configure(text=self.DESCRIPTIONS.get(nom, ""))
 
     def _glisser(self, page, sens, etapes=10, duree=200):
-        """La page arrive en glissant (de droite si sens = 1, de gauche si -1), puis reprend sa place normale."""
+        """La page arrive en glissant verticalement, comme la liste des rubriques : d'en bas si sens = 1 (rubrique
+        plus bas dans la liste), d'en haut si -1 ; puis elle reprend sa place normale."""
         if getattr(self, "_glissement", None):
             self.zone.after_cancel(self._glissement)
-        distance = 60 * sens
-        page.place(x=distance, y=0, relwidth=1, relheight=1)
+        distance = 40 * sens
+        page.place(x=0, y=distance, relwidth=1, relheight=1)
 
         def etape(numero):
             if self.pages.get(self.actif) is not page:
                 return  # (une autre rubrique a été choisie entre-temps)
             if numero <= etapes:
-                page.place_configure(x=round(distance * (1 - en_douceur(numero / etapes))))
+                page.place_configure(y=round(distance * (1 - en_douceur(numero / etapes))))
                 self._glissement = self.zone.after(duree // etapes, etape, numero + 1)
             else:
                 self._glissement = None
