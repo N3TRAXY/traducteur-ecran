@@ -203,15 +203,12 @@ CONFIG_DEFAUT = {
 RACCOURCIS = {
     "pause": ("raccourci", "ctrl+alt+t", "Marche / pause"),
     "ecrire": ("raccourci_ecrire", "ctrl+alt+enter", "Traduire ton message"),  # (pas Ctrl+Alt+E : AltGr+E, « € »)
-    # Ctrl+C : toute copie d'un texte traduit. (Pas « raccourci_copier » : une ancienne version y a laissé Ctrl+Alt+C.)
-    "copier": ("raccourci_copie", "ctrl+c", "Copier la traduction"),
     "zone": ("raccourci_zone", "ctrl+alt+z", "Traduire une zone choisie"),
     "capture": ("raccourci_capture", "print screen", "Capture d'écran"),
-    "capture_zone": ("raccourci_capture_zone", "windows+shift+s", "Capture d'une zone"),
 }
 CONFIG_DEFAUT.update({cle: defaut for cle, defaut, _ in RACCOURCIS.values()})
-IDS_RACCOURCIS = {"pause": 1, "ecrire": 2, "copier": 3, "zone": 4}  # raccourcis de Windows (RegisterHotKey)
-CAPTURES = ("capture", "capture_zone")  # touches seulement guettées : la capture est faite par Windows
+IDS_RACCOURCIS = {"pause": 1, "ecrire": 2, "zone": 4}  # raccourcis de Windows (RegisterHotKey)
+CAPTURES = ("capture",)  # touches seulement guettées : la capture est faite par Windows
 # Noms des touches sur les touches dessinées (« print screen » -> « Impr. écran »).
 NOMS_TOUCHES = {"ctrl": "Ctrl", "alt": "Alt", "alt gr": "AltGr", "shift": "Maj", "maj": "Maj", "windows": "Win",
                 "enter": "Entrée", "print screen": "Impr. écran", "space": "Espace", "esc": "Échap", "delete": "Suppr",
@@ -445,7 +442,8 @@ def charger_config():
         if isinstance(donnees, dict):
             config.update(donnees)
             config.pop("traduire_navigateurs", None)  # (option retirée : sans l'extension, l'écran est lu)
-            config.pop("raccourci_copier", None)  # (réglage d'une ancienne version, plus utilisé)
+            for ancien in ("raccourci_copier", "raccourci_copie", "raccourci_capture_zone"):
+                config.pop(ancien, None)  # (raccourcis retirés : copier la traduction, capture d'une zone)
     except FileNotFoundError:
         pass
     except Exception:
@@ -4797,10 +4795,6 @@ class Calque:
             return None  # une fenêtre est posée dessus : la traduction flotterait par-dessus elle
         return tuple(lignes), taille, int(x), int(y), l, h, tuple(fond), tuple(encre), centre, chasse, gras
 
-    def textes_traduits(self):
-        """Textes d'origine actuellement recouverts par une traduction."""
-        return [t.texte.replace(MARQUE_CODE, "") for t in self.affiches]
-
 
 # --------------------------------------------------------------------------- extension du navigateur
 #
@@ -6108,7 +6102,6 @@ class Application:
         self.reveil_suivi = threading.Event()
         # Durées (secondes) relevées pour le journal : lecture de l'image, traduction des nouveaux textes.
         self.mesures = {"image": [], "traduction": [], "accessibilite": []}
-        self.presse_papiers_a_traduire = None  # (numéro du presse-papiers, texte copié)
         self.oubli_demande = False  # « Oublier les traductions mémorisées » (fait par le fil de traduction)
         self.extension_vue_le = {}  # programme du navigateur -> dernier signe de vie de son extension
         self._extension_affichee = frozenset()  # navigateurs de l'extension tels qu'affichés dans les réglages
@@ -6149,7 +6142,6 @@ class Application:
         if EST_EXE and DEPOT_GITHUB:
             threading.Thread(target=self._surveiller_mises_a_jour, name="mises_a_jour", daemon=True).start()
         self._demarrer_serveur()
-        self.root.after(400, self._surveiller_presse_papiers)
         self.root.after(3000, self._verifier_extension)
         self.root.after(100, self._garder_vitres)
         self.plein_ecran_signales = set()  # jeux en plein écran exclusif déjà signalés (une fois chacun)
@@ -6163,7 +6155,6 @@ class Application:
         self.raccourci_actif = None  # raccourci de secours (bibliothèque « keyboard »), s'il a fallu
         self.fil_entrees = None  # identifiant du fil qui écoute le clavier et la souris
         self.raccourci_demande = None  # (action, nouvelle combinaison) à enregistrer (par ce fil)
-        self.copie_demandee_le = -1e9  # raccourci « copier la traduction » (s'il n'est pas Ctrl+C)
         self.touches_capture = self._touches_capture()
         threading.Thread(target=self._ecouter_entrees, name="entrees", daemon=True).start()
         self._ecouter_fenetres()
@@ -6260,8 +6251,6 @@ class Application:
                         action = actions.get(message.wParam) if message.message == WM_HOTKEY else None
                         if action == "ecrire":
                             threading.Thread(target=self._ecrire_traduit, daemon=True).start()
-                        elif action == "copier":
-                            threading.Thread(target=self._copier_traduction, daemon=True).start()
                         elif action == "pause":
                             self.commandes.put(("basculer",))
                         elif action == "zone":
@@ -6288,8 +6277,8 @@ class Application:
     @staticmethod
     def _enregistrer_raccourci(combinaison, action="pause"):
         """(Fil des entrées.) True si Windows a accepté ce raccourci (il peut être pris par un autre programme).
-        Aucun raccourci, ou Ctrl+C pour copier (la copie normale, surveillée) : rien à enregistrer."""
-        if not combinaison or (action == "copier" and combinaison == RACCOURCIS["copier"][1]):
+        Aucun raccourci : rien à enregistrer."""
+        if not combinaison:
             return True
         touches = touches_du_raccourci(combinaison)
         return bool(touches) and bool(user32.RegisterHotKey(None, IDS_RACCOURCIS[action], touches[0] | 0x4000,
@@ -6734,7 +6723,7 @@ class Application:
             if a_jour and attendue:
                 self.reveil_accessibilite.set()  # positions stables : l'accessibilité peut relire
 
-    # ---- copier une traduction, naturellement
+    # ---- petits messages et touches tapées pour l'utilisateur
 
     def _signaler(self, message, duree=3.5):
         """Petit message en haut à droite de l'écran (même en pause), qui s'efface tout seul."""
@@ -6764,19 +6753,6 @@ class Application:
         while time.monotonic() < fin and any(user32.GetAsyncKeyState(t) & 0x8000
                                              for t in (0x10, 0x11, 0x12, 0x0D, 0x5B, 0x5C)):
             time.sleep(0.02)
-
-    def _copier_traduction(self):
-        """(Fil à part.) Raccourci « copier la traduction » choisi à la place de Ctrl+C : on copie (Ctrl+C), et
-        la surveillance du presse-papiers y met la traduction."""
-        self._attendre_touches_lachees()
-        self.copie_demandee_le = time.monotonic()
-        self._taper(0x11, 0x43)
-
-    def _copie_a_traduire(self):
-        """Une copie qui vient d'arriver doit-elle recevoir la traduction ? Avec Ctrl+C (par défaut) : toujours ;
-        avec un autre raccourci : seulement juste après lui ; sans raccourci : jamais."""
-        choisi = self.config[RACCOURCIS["copier"][0]]
-        return choisi == RACCOURCIS["copier"][1] or (bool(choisi) and time.monotonic() - self.copie_demandee_le < 2)
 
     def _nom_raccourci(self, action):
         """Le raccourci de cette action, lisible (« Ctrl+Alt+Entrée »)."""
@@ -6838,66 +6814,6 @@ class Application:
                 remettre_presse_papiers(avant)
             self.numero_presse_papiers = user32.GetClipboardSequenceNumber()
             self.ecriture_en_cours = False
-
-    def _surveiller_presse_papiers(self):
-        """Quand on copie (Ctrl+C) un texte affiché traduit, le presse-papiers reçoit la traduction."""
-        try:
-            numero = user32.GetClipboardSequenceNumber()
-            if numero != self.numero_presse_papiers:
-                self.numero_presse_papiers = numero
-                # (Pas nos propres copies de Ctrl+Alt+Entrée ; seulement les copies voulues : voir _copie_a_traduire.)
-                if self.actif and not self.ecriture_en_cours and self._copie_a_traduire():
-                    try:
-                        texte = self.root.clipboard_get()
-                    except tk.TclError:
-                        texte = ""  # pas du texte (image, fichiers…)
-                    if texte and len(texte) < 20_000 and self._vient_de_l_ecran(texte):
-                        self.presse_papiers_a_traduire = (numero, texte)
-                        self.reveil.set()
-        finally:
-            self.root.after(300, self._surveiller_presse_papiers)
-
-    def _vient_de_l_ecran(self, copie):
-        """Le texte copié vient-il des textes affichés avec leur traduction ? Une sélection dans un texte
-        traduit, ou plusieurs textes traduits copiés ensemble ; pas une phrase quelconque qui contient
-        par hasard un petit libellé traduit (« Home »), ni une copie faite dans un programme exclu."""
-        lecteur = self.lecteur
-        if lecteur is not None and not lecteur._a_traduire(programme_de_fenetre(user32.GetForegroundWindow())):
-            return False
-        copie = " ".join(copie.split()).casefold()
-        if len(copie) < 3:
-            return False
-        couvert = 0  # part de la copie faite de textes traduits
-        for original in self.calque.textes_traduits():
-            original = " ".join(original.split()).casefold()
-            if copie in original:
-                return True
-            if len(original) >= 3 and original in copie:
-                couvert += len(original)
-        return couvert >= 0.6 * len(copie)
-
-    def _cmd_presse_papiers(self, numero, traduction):
-        if user32.GetClipboardSequenceNumber() != numero:
-            return  # quelque chose d'autre a été copié entre-temps
-        self.root.clipboard_clear()
-        self.root.clipboard_append(traduction)
-        self.root.update_idletasks()
-        self.numero_presse_papiers = user32.GetClipboardSequenceNumber()
-
-    def _traduire_presse_papiers(self, traducteur, cible):
-        numero, texte = self.presse_papiers_a_traduire
-        self.presse_papiers_a_traduire = None
-        lignes = texte.splitlines()
-        traductions = traducteur.traduire([l.strip() for l in lignes if l.strip()], cible)
-        sortie, i = [], 0
-        for ligne in lignes:
-            if ligne.strip():
-                sortie.append(traductions[i] or ligne)
-                i += 1
-            else:
-                sortie.append(ligne)
-        if any(traductions):
-            self.commandes.put(("presse_papiers", numero, "\n".join(sortie)))
 
     # ---- boucle principale (thread Tk)
 
@@ -7513,8 +7429,7 @@ class Application:
         elif touches_du_raccourci(combinaison) is None:
             self.reglages.fin_raccourci(action, "Il faut Ctrl, Alt, Maj ou Win + une touche (ou F1 à F12)")
             return
-        elif action not in CAPTURES and combinaison in RACCOURCIS_RESERVES \
-                and not (action == "copier" and combinaison == RACCOURCIS["copier"][1]):
+        elif action not in CAPTURES and combinaison in RACCOURCIS_RESERVES:
             self.reglages.fin_raccourci(action, "Déjà utilisée par Windows, choisis-en une autre")
             return
         else:
@@ -7752,11 +7667,6 @@ class Application:
                 self._oublier(traducteur)
             if not self.actif or self.arret.is_set():
                 continue
-            if self.presse_papiers_a_traduire:
-                try:
-                    self._traduire_presse_papiers(traducteur, self.config["langue_cible"])
-                except Exception:  # une copie qui échoue n'arrête pas la traduction de l'écran
-                    log.exception("Traduction du texte copié impossible")
             self._attendre_image_a_jour(self.reveil)
             debut = time.monotonic()
             try:
