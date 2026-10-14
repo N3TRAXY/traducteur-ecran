@@ -3083,6 +3083,8 @@ def installer_modeles(paires, progression, annule):
         raise RuntimeError("Pas de modèle pour " + ", ".join(f"{de} → {vers}" for de, vers in introuvables))
     os.makedirs(DOSSIER_TELECHARGEMENTS, exist_ok=True)
     for reste in os.listdir(DOSSIER_TELECHARGEMENTS):  # restes d'un téléchargement coupé (PC éteint…)
+        if reste == MODELE_IA["fichier"]:
+            continue  # (l'IA, elle, reprend où elle s'était arrêtée : voir installer_modele_ia)
         try:
             os.remove(os.path.join(DOSSIER_TELECHARGEMENTS, reste))
         except OSError:
@@ -3111,8 +3113,9 @@ def installer_modeles(paires, progression, annule):
     return True
 
 
-def _telecharger(liens, chemin, avancer, annule):
-    """Enregistre le fichier du premier lien qui répond ; False si annulé."""
+def _telecharger(liens, chemin, avancer, annule, reprendre=False):
+    """Enregistre le fichier du premier lien qui répond ; False si annulé. `reprendre` : un début déjà téléchargé
+    (connexion coupée, PC éteint) est gardé, et seule la suite est demandée au serveur."""
     erreur = OSError("Aucun lien de téléchargement")
     for lien in liens:
         if lien.startswith("http://"):
@@ -3121,16 +3124,24 @@ def _telecharger(liens, chemin, avancer, annule):
             continue  # (liens « ipfs:// » de l'index : illisibles sans logiciel spécial)
         # Le serveur des modèles refuse le nom de client par défaut de Python (erreur 403) : on se
         # présente comme Argos Translate lui-même.
-        requete = urllib.request.Request(lien, headers={"User-Agent": "ArgosTranslate"})
+        deja = os.path.getsize(chemin) if reprendre and os.path.exists(chemin) else 0
+        entetes = {"User-Agent": "ArgosTranslate"} | ({"Range": f"bytes={deja}-"} if deja else {})
+        requete = urllib.request.Request(lien, headers=entetes)
         try:
-            with urllib.request.urlopen(requete, timeout=30) as reponse, open(chemin, "wb") as fichier:
-                total, lu = int(reponse.headers.get("Content-Length") or 0), 0
-                while bloc := reponse.read(1 << 18):
-                    if annule():
-                        return False
-                    fichier.write(bloc)
-                    lu += len(bloc)
-                    avancer(lu, total)
+            with urllib.request.urlopen(requete, timeout=30) as reponse:
+                suite = deja and reponse.status == 206  # (le serveur envoie bien la suite ; sinon tout, depuis le début)
+                if suite:
+                    log.info("Téléchargement repris à %d Mo : %s", deja // 2**20, os.path.basename(chemin))
+                total = int(reponse.headers.get("Content-Length") or 0) + (deja if suite else 0)
+                lu = deja if suite else 0
+                fichier = open(chemin, "ab" if suite else "wb")
+                with fichier:
+                    while bloc := reponse.read(1 << 18):
+                        if annule():
+                            return False
+                        fichier.write(bloc)
+                        lu += len(bloc)
+                        avancer(lu, total)
             if total and lu < total:
                 raise OSError(f"Téléchargement interrompu ({lu} octets sur {total})")
             return True
@@ -3789,21 +3800,17 @@ def installer_modele_ia(progression, annule):
     def avancer(lu, total):
         progression(f"IA locale : {lu // 2**20} / {total // 2**20} Mo", lu / total if total else 0.0)
 
-    try:
-        if not _telecharger([lien], chemin, avancer, annule):
-            return False
-        progression("IA locale : vérification…", 1.0)
-        if empreinte_sha256(chemin) != MODELE_IA["sha256"]:
-            raise OSError("modèle de l'IA abîmé pendant le téléchargement")
-        os.makedirs(DOSSIER_IA, exist_ok=True)
-        os.replace(chemin, chemin_modele_ia())
-        log.info("Modèle de l'IA installé (%s)", MODELE_IA["fichier"])
-        return True
-    finally:
-        try:
-            os.remove(chemin)
-        except OSError:
-            pass
+    # (Pas d'effacement en cas d'échec : le début téléchargé sert à reprendre ; seul un fichier abîmé est effacé.)
+    if not _telecharger([lien], chemin, avancer, annule, reprendre=True):
+        return False
+    progression("IA locale : vérification…", 1.0)
+    if empreinte_sha256(chemin) != MODELE_IA["sha256"]:
+        os.remove(chemin)
+        raise OSError("modèle de l'IA abîmé pendant le téléchargement")
+    os.makedirs(DOSSIER_IA, exist_ok=True)
+    os.replace(chemin, chemin_modele_ia())
+    log.info("Modèle de l'IA installé (%s)", MODELE_IA["fichier"])
+    return True
 
 
 def choisir_carte_ia(liste):
