@@ -3728,8 +3728,7 @@ MEMOIRE_IA = 4000  # Mo au moins sur la carte graphique (l'IA en prend 2,8)
 VEILLE_IA = 15 * 60  # s sans rien à retraduire : le moteur s'arrête et rend la mémoire de la carte (à un jeu)
 # Vers le français, l'IA tutoie, comme le programme (sans cela, elle vouvoyait presque toujours : « Pouvez-vous… »,
 # « Merci pour votre achat »). Comparé sur 7 phrases : 7 tutoient, sans perte de qualité.
-TUTOIEMENT = "Address the reader informally: always use « tu » (tutoiement), never « vous ».
-"
+TUTOIEMENT = "Address the reader informally: always use « tu » (tutoiement), never « vous ».\n"
 MOTS_IA = 4  # à partir de ce nombre de mots (deux caractères chinois ou japonais valent un mot), l'IA retraduit
 NOMS_ANGLAIS = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "pt": "Portuguese",
                 "nl": "Dutch", "pl": "Polish", "ro": "Romanian", "sv": "Swedish", "tr": "Turkish", "el": "Greek",

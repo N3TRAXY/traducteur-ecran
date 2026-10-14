@@ -549,7 +549,8 @@ verifier("Open Project" not in proposes
          and apres_ia[("This text is far too long for the engine.", "fr")] == "Ce texte est bien trop long pour le moteur."
          and ("Break a leg at your show tomorrow!", "fr") not in essai_ia_trad.cache and pretes
          and invites_ia and all(i.startswith("<start_of_turn>user\nYou are a professional English (en) to French (fr)")
-                                and i.endswith("<end_of_turn>\n<start_of_turn>model\n") for i in invites_ia),
+                                and i.endswith("<end_of_turn>\n<start_of_turn>model\n") and te.TUTOIEMENT in i
+                                for i in invites_ia),
          "IA locale : phrases seulement, traduction remplacée, nombre changé et texte refusé gardés, consigne de "
          "TranslateGemma, coupée : traductions habituelles", (proposes, apres_ia, invites_ia[:1]))
 # La carte graphique de l'IA : une vraie carte avec assez de mémoire (pas la puce graphique du processeur), la plus
