@@ -63,7 +63,7 @@ import pystray
 import sentencepiece
 from py3langid.langid import MODEL_FILE as MODELE_LANGID
 from py3langid.langid import LanguageIdentifier
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageTk
 from winrt.windows.globalization import Language as LangueWindows
 from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
 from winrt.windows.media.ocr import OcrEngine
@@ -5032,7 +5032,8 @@ def image_relief(largeur, hauteur, rayon, creux, sombre, marge, decalage, flou):
     fond = FOND[sombre]
     lumiere, ombre = OMBRES[sombre]
     image = Image.new("RGBA", (l, h), fond)
-    if l - 2 * m < 2 * r + 2 or h - 2 * m < 2 * r + 2:
+    r = min(r, (l - 2 * m) // 2, (h - 2 * m) // 2)  # (arrondi pas plus grand que la forme)
+    if l - 2 * m < 4 or h - 2 * m < 4:
         return image.resize((largeur, hauteur))  # (trop petit, le temps de la mise en place : pas d'ombre)
     cadre = (m, m, l - m, h - m)
     if not creux:
@@ -5224,43 +5225,140 @@ class Relief(ctk.CTkFrame):
             self._poser(images)
 
 
+class BoutonRelief(Relief):
+    """Un bouton en relief, qui s'enfonce quand on appuie. S'utilise comme un CTkButton (configure, cget)."""
+
+    def __init__(self, parent, texte, commande, largeur=0, accent=False, hauteur=30):
+        super().__init__(parent, rayon=12, decalage=2, flou=3, interieur=0)
+        self.bouton = ctk.CTkButton(
+            self.dedans, text=texte, width=largeur or 260, height=hauteur, command=commande, corner_radius=10,
+            border_width=0, font=ctk.CTkFont("Segoe UI", 12, "bold" if accent else "normal"),
+            fg_color=ACCENT if accent else FOND, hover_color=ACCENT_SURVOL if accent else ("#EDF1F6", "#2C3039"),
+            text_color="#FFFFFF" if accent else TEXTE)
+        self.bouton.pack(fill="x")
+        enfoncer(self, self.bouton)
+
+    def configure(self, require_redraw=False, **options):
+        if "bouton" not in self.__dict__:  # (pendant la construction du cadre lui-même)
+            return super().configure(require_redraw, **options)
+        self.bouton.configure(**options)
+
+    def cget(self, option):
+        return self.bouton.cget(option) if "bouton" in self.__dict__ else super().cget(option)
+
+
+def menu_relief(parent, valeurs, variable, commande, largeur=170, **options):
+    """Un menu déroulant en relief : (cadre en relief, menu)."""
+    relief = Relief(parent, rayon=12, decalage=2, flou=3, interieur=0)
+    menu = ctk.CTkOptionMenu(relief.dedans, values=valeurs, variable=variable, width=largeur, height=32,
+                             command=commande, corner_radius=10, font=ctk.CTkFont("Segoe UI", 13),
+                             dropdown_font=ctk.CTkFont("Segoe UI", 13), fg_color=FOND, button_color=FOND,
+                             button_hover_color=("#EDF1F6", "#2C3039"), text_color=TEXTE, **options)
+    menu.pack(fill="x")
+    return relief, menu
+
+
+def champ_creux(parent, **options):
+    """Un champ de saisie creusé : (cadre creusé, champ)."""
+    relief = Relief(parent, etat="creux", rayon=12, marge=2, decalage=2, flou=3, interieur=0)
+    champ = ctk.CTkEntry(relief.dedans, height=28, border_width=0, corner_radius=0, fg_color=FOND,
+                         font=ctk.CTkFont("Segoe UI", 12), **options)
+    champ.pack(fill="x")
+    return relief, champ
+
+
 class ChoixRelief(Relief):
-    """Plusieurs choix dans un rail creusé ; le choix en cours est en relief (remplace CTkSegmentedButton)."""
+    """Plusieurs choix dans un rail creusé ; une pastille en relief marque le choix en cours et glisse jusqu'au
+    nouveau (remplace CTkSegmentedButton). Dessinés sur une toile : la pastille passe sous les textes."""
+
+    HAUTEUR = 34
+    DUREE = 220  # ms du glissement
 
     def __init__(self, parent, valeurs, variable, commande):
         super().__init__(parent, etat="creux", rayon=14, marge=4, decalage=2, flou=3, interieur=4)
-        self.variable, self.commande, self.options = variable, commande, {}
-        for colonne, valeur in enumerate(valeurs):
-            self.dedans.grid_columnconfigure(colonne, weight=1, uniform="choix")
-            option = Relief(self.dedans, etat="plat", rayon=11, decalage=1, flou=2, interieur=1)
-            option.grid(row=0, column=colonne, sticky="ew")
-            etiquette = ctk.CTkLabel(option.dedans, text=valeur, height=26, font=ctk.CTkFont("Segoe UI", 12))
-            etiquette.pack(fill="x", padx=4)
-            morceaux = (option, option.fond, option.dedans, etiquette)
-            for morceau in morceaux:
-                morceau.bind("<Button-1>", lambda _e, v=valeur: self._choisir(v))
-            suivre_survol(option, morceaux, lambda v=valeur: self._survoler(v, True),
-                          lambda v=valeur: self._survoler(v, False))
-            self.options[valeur] = (option, etiquette)
-        variable.trace_add("write", lambda *_: self._afficher())
-        self._afficher()
+        self.variable, self.commande, self.valeurs = variable, commande, list(valeurs)
+        echelle = self._get_widget_scaling()
+        self.toile = tk.Canvas(self.dedans, height=round(self.HAUTEUR * echelle), highlightthickness=0, bd=0)
+        self.toile.pack(fill="x")
+        self.position = None  # x de la pastille (pixels réels) ; None : pas encore placée
+        self.survol = None  # indice du choix sous la souris
+        self._glissement = None
+        self._pastille = None
+        self.toile.bind("<Configure>", lambda _e: self._dessiner())
+        self.toile.bind("<Button-1>", self._clic)
+        self.toile.bind("<Motion>", self._bouger)
+        self.toile.bind("<Leave>", lambda _e: self._bouger(None))
+        variable.trace_add("write", lambda *_: self._aller())
+        ctk.AppearanceModeTracker.add(lambda _mode: self._dessiner(), self)
 
-    def _choisir(self, valeur):
+    def _indice(self):
+        valeur = self.variable.get()
+        return self.valeurs.index(valeur) if valeur in self.valeurs else 0
+
+    def _case(self):
+        return max(1, self.toile.winfo_width()) / len(self.valeurs)
+
+    def _dessiner(self):
+        """Toute la toile : la pastille (à sa position) et les textes."""
+        toile, echelle = self.toile, self._get_widget_scaling()
+        largeur, hauteur = toile.winfo_width(), toile.winfo_height()
+        if largeur < 10:
+            return
+        sombre = ctk.get_appearance_mode() == "Dark"
+        toile.configure(bg=FOND[sombre])
+        toile.delete("all")
+        case = largeur / len(self.valeurs)
+        if self.position is None or not self._glissement:
+            self.position = self._indice() * case
+        decalage, flou = round(2 * echelle), round(2 * echelle)
+        marge = decalage + 2 * flou
+        image = image_relief(round(case), hauteur, round(11 * echelle), False, sombre, marge, decalage, flou)
+        self._pastille = ImageTk.PhotoImage(image)
+        toile.create_image(self.position, 0, image=self._pastille, anchor="nw", tags="pastille")
+        choisi = self._indice()
+        for i, valeur in enumerate(self.valeurs):
+            couleur = ACCENT if i == choisi else (TEXTE if i == self.survol else ("#7A8499", "#8C93A6"))
+            toile.create_text((i + 0.5) * case, hauteur / 2, text=valeur, fill=couleur[sombre] if isinstance(
+                couleur, tuple) else couleur, font=("Segoe UI", -round(12 * echelle), "bold" if i == choisi else "normal"))
+
+    def _aller(self):
+        """Le choix a changé : la pastille glisse jusqu'à lui (ralentit à la fin)."""
+        if self._glissement:
+            self.after_cancel(self._glissement)
+            self._glissement = None
+        depart, arrivee = self.position, self._indice() * self._case()
+        if depart is None or abs(depart - arrivee) < 1 or not self.toile.winfo_ismapped():
+            self.position = arrivee
+            self._dessiner()
+            return
+        etapes = 12
+
+        def etape(numero):
+            self.position = depart + (arrivee - depart) * en_douceur(numero / etapes)
+            self.toile.coords("pastille", self.position, 0)
+            if numero < etapes:
+                self._glissement = self.after(self.DUREE // etapes, etape, numero + 1)
+            else:
+                self._glissement = None
+                self._dessiner()
+
+        self._glissement = True
+        self._dessiner()  # (couleurs des textes : le nouveau choix en bleu tout de suite)
+        etape(1)
+
+    def _clic(self, evenement):
+        valeur = self.valeurs[min(len(self.valeurs) - 1, int(evenement.x // self._case()))]
         if valeur != self.variable.get():
             self.variable.set(valeur)
             self.commande(valeur)
 
-    def _survoler(self, valeur, dessus):
-        """Au survol, un choix (pas celui en cours) ressort un peu."""
-        if valeur != self.variable.get():
-            self.options[valeur][0].changer("relief", 0.45) if dessus else self.options[valeur][0].changer("plat")
-
-    def _afficher(self):
-        for valeur, (option, etiquette) in self.options.items():
-            choisi = valeur == self.variable.get()
-            option.changer("relief" if choisi else "plat")
-            etiquette.configure(text_color=ACCENT if choisi else ("#7A8499", "#8C93A6"),
-                                font=ctk.CTkFont("Segoe UI", 12, "bold" if choisi else "normal"))
+    def _bouger(self, evenement):
+        survol = None if evenement is None else min(len(self.valeurs) - 1, int(evenement.x // self._case()))
+        if survol != self.survol:
+            self.survol = survol
+            self.toile.configure(cursor="hand2" if survol is not None and survol != self._indice() else "")
+            if not self._glissement:
+                self._dessiner()
 
 
 # --------------------------------------------------------------------------- fenêtre principale
@@ -5314,10 +5412,16 @@ class Navigation:
                 etiquette.configure(text_color=TEXTE if dessus else self.GRIS)
 
     def set(self, nom):
-        if self.actif:
-            self.pages[self.actif].pack_forget()
+        precedent = self.actif
+        if precedent:
+            self.pages[precedent].pack_forget()
+            self.pages[precedent].place_forget()
         self.actif = nom
-        self.pages[nom].pack(fill="both", expand=True)
+        page = self.pages[nom]
+        if precedent and precedent != nom and self.zone.winfo_ismapped():
+            self._glisser(page, 1 if list(self.pages).index(nom) > list(self.pages).index(precedent) else -1)
+        else:
+            page.pack(fill="both", expand=True)
         self.ajuster_hauteur()
         for autre, (element, icone, texte) in self.elements.items():
             choisi = autre == nom
@@ -5327,6 +5431,26 @@ class Navigation:
             texte.configure(font=ctk.CTkFont("Segoe UI", 13, "bold" if choisi else "normal"))
         self.titre.configure(text=nom)
         self.description.configure(text=self.DESCRIPTIONS.get(nom, ""))
+
+    def _glisser(self, page, sens, etapes=10, duree=200):
+        """La page arrive en glissant (de droite si sens = 1, de gauche si -1), puis reprend sa place normale."""
+        if getattr(self, "_glissement", None):
+            self.zone.after_cancel(self._glissement)
+        distance = 60 * sens
+        page.place(x=distance, y=0, relwidth=1, relheight=1)
+
+        def etape(numero):
+            if self.pages.get(self.actif) is not page:
+                return  # (une autre rubrique a été choisie entre-temps)
+            if numero <= etapes:
+                page.place_configure(x=round(distance * (1 - en_douceur(numero / etapes))))
+                self._glissement = self.zone.after(duree // etapes, etape, numero + 1)
+            else:
+                self._glissement = None
+                page.place_forget()
+                page.pack(fill="both", expand=True)
+
+        etape(1)
 
     def get(self):
         return self.actif
@@ -5466,12 +5590,8 @@ class Reglages:
         app = self.app
         self._titre(onglet, "Je lis en", 4)
         self.langue = ctk.StringVar()
-        ctk.CTkOptionMenu(
-            onglet, values=list(LANGUES), variable=self.langue, height=36,
-            font=ctk.CTkFont("Segoe UI", 14), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color=ACCENT_SURVOL, button_hover_color=ACCENT_FONCE,
-            command=lambda nom: app.choisir_langue(LANGUES[nom]),
-        ).pack(fill="x", padx=6, pady=(6, 0))
+        menu_relief(onglet, list(LANGUES), self.langue, lambda nom: app.choisir_langue(LANGUES[nom]),
+                    largeur=400)[0].pack(fill="x", pady=(2, 0))
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
         ligne.pack(fill="x", padx=6, pady=(14, 0))
         textes = ctk.CTkFrame(ligne, fg_color="transparent")
@@ -5487,8 +5607,7 @@ class Reglages:
         self.etat_langues = ctk.CTkLabel(ligne, text="", font=ctk.CTkFont("Segoe UI", 12), anchor="w",
                                          justify="left", wraplength=290)
         self.etat_langues.pack(side="left", fill="x", expand=True)
-        self.action_langues = ctk.CTkButton(ligne, text="", width=90, height=26, font=ctk.CTkFont("Segoe UI", 12),
-                                            fg_color=ACCENT, hover_color=ACCENT_SURVOL)
+        self.action_langues = BoutonRelief(ligne, "", None, 90, accent=True, hauteur=26)
         self._ligne_etat_langues = ligne
         self.barre_langues = ctk.CTkProgressBar(onglet, height=6, progress_color=ACCENT)  # pendant un téléchargement
         self._langues_affichees = None
@@ -5604,11 +5723,8 @@ class Reglages:
         ligne.pack(fill="x", padx=6, pady=(16, 0))
         ctk.CTkLabel(ligne, text="J'écris en", font=ctk.CTkFont("Segoe UI", 13, "bold")).pack(side="left")
         self.langue_ecriture = ctk.StringVar()
-        ctk.CTkOptionMenu(
-            ligne, values=list(LANGUES), variable=self.langue_ecriture, width=170, height=30,
-            font=ctk.CTkFont("Segoe UI", 13), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color=ACCENT_SURVOL, button_hover_color=ACCENT_FONCE,
-            command=lambda nom: app.choisir_langue_ecriture(LANGUES[nom])).pack(side="right")
+        menu_relief(ligne, list(LANGUES), self.langue_ecriture,
+                    lambda nom: app.choisir_langue_ecriture(LANGUES[nom]))[0].pack(side="right")
         self.note_ecrire = ctk.CTkLabel(onglet, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
                                         anchor="w", justify="left", wraplength=430)
         self.note_ecrire.pack(fill="x", padx=6, pady=(6, 0))
@@ -5617,20 +5733,19 @@ class Reglages:
         self._titre(onglet, "Mes mots", 14)
         ajout = ctk.CTkFrame(onglet, fg_color="transparent")
         ajout.pack(fill="x", padx=6, pady=(6, 0))
-        style = dict(height=32, font=ctk.CTkFont("Segoe UI", 12), border_width=0, corner_radius=10,
-                     fg_color=FOND_CREUX)
-        self.nouveau_mot = ctk.CTkEntry(ajout, width=130, placeholder_text="Mot ou nom", **style)
-        self.nouveau_mot.pack(side="left")
-        self.nouvelle_traduction = ctk.CTkEntry(ajout, placeholder_text="Sa traduction (vide : jamais traduit)", **style)
-        self.nouvelle_traduction.pack(side="left", fill="x", expand=True, padx=(6, 6))
-        ctk.CTkButton(ajout, text="Ajouter", width=76, height=32, fg_color=ACCENT, hover_color=ACCENT_SURVOL,
-                      command=self._ajouter_mot).pack(side="right")
+        relief, self.nouveau_mot = champ_creux(ajout, width=120, placeholder_text="Mot ou nom")
+        relief.pack(side="left")
+        relief, self.nouvelle_traduction = champ_creux(ajout, placeholder_text="Sa traduction (vide : jamais traduit)")
+        relief.pack(side="left", fill="x", expand=True, padx=(6, 4))
+        BoutonRelief(ajout, "Ajouter", self._ajouter_mot, 76, accent=True).pack(side="right")
         for champ in (self.nouveau_mot, self.nouvelle_traduction):
             champ.bind("<Return>", lambda _e: self._ajouter_mot())
         # (Petite hauteur demandée : la liste s'étire sur la place libre, sans agrandir la fenêtre.)
-        self.liste_mots = ctk.CTkScrollableFrame(onglet, height=60, corner_radius=12, fg_color=FOND_CREUX)
+        cadre = Relief(onglet, etat="creux", rayon=14, marge=2, decalage=3, flou=4, interieur=0)
+        cadre.pack(fill="both", expand=True, pady=(6, 0))
+        self.liste_mots = ctk.CTkScrollableFrame(cadre.dedans, height=60, corner_radius=0, fg_color=FOND)
         self.liste_mots._scrollbar.configure(height=60)  # (sinon sa barre de défilement demande 200 px)
-        self.liste_mots.pack(fill="both", expand=True, padx=6, pady=(8, 0))
+        self.liste_mots.pack(fill="both", expand=True)
         self._mots_affiches = None
 
     @staticmethod
@@ -5696,8 +5811,9 @@ class Reglages:
         ctk.CTkLabel(ligne, text="Gardé seulement tant que le programme tourne, jamais enregistré.", anchor="w",
                      text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12)).pack(side="left")
         self._bouton_discret(ligne, "Effacer", self._effacer_historique, 76).pack(side="right")
-        self.liste_historique = ctk.CTkFrame(onglet, corner_radius=12, fg_color=FOND_CREUX)
-        self.liste_historique.pack(fill="x", padx=6, pady=(8, 0))
+        cadre = Relief(onglet, etat="creux", rayon=14, marge=2, decalage=3, flou=4, interieur=0)
+        cadre.pack(fill="x", pady=(6, 0))
+        self.liste_historique = cadre.dedans
         self._historique_affiche = None
 
     HISTORIQUE_AFFICHE = 10  # lignes au plus (les plus récentes) : la page reste courte et rapide
@@ -5808,17 +5924,14 @@ class Reglages:
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
         ligne.pack(fill="x", padx=6, pady=(8, 0))
         self.a_ajouter = ctk.StringVar(value=self.CHOISIR)
-        self.menu_programmes = ctk.CTkOptionMenu(
-            ligne, values=[self.CHOISIR], variable=self.a_ajouter, height=32, dynamic_resizing=False,
-            font=ctk.CTkFont("Segoe UI", 13), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=FOND_CREUX, button_color=FOND_CREUX,
-            button_hover_color=("#D5D8E3", "#3D4057"), text_color=("#30333F", "#E4E6EE"))
-        self.menu_programmes.pack(side="left", fill="x", expand=True)
-        self._bouton_discret(ligne, "Parcourir…", self._parcourir, 92).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(ligne, text="Ajouter", width=76, height=32, command=self._ajouter_programme,
-                      fg_color=ACCENT, hover_color=ACCENT_SURVOL).pack(side="right", padx=(6, 0))
-        self.liste_programmes = ctk.CTkFrame(onglet, corner_radius=12, fg_color=FOND_CREUX)
-        self.liste_programmes.pack(fill="x", padx=6, pady=(8, 0))
+        relief, self.menu_programmes = menu_relief(ligne, [self.CHOISIR], self.a_ajouter, None, largeur=150,
+                                                   dynamic_resizing=False)
+        relief.pack(side="left", fill="x", expand=True)
+        self._bouton_discret(ligne, "Parcourir…", self._parcourir, 88).pack(side="right", padx=(4, 0))
+        BoutonRelief(ligne, "Ajouter", self._ajouter_programme, 70, accent=True).pack(side="right", padx=(4, 0))
+        cadre = Relief(onglet, etat="creux", rayon=14, marge=2, decalage=3, flou=4, interieur=0)
+        cadre.pack(fill="x", pady=(6, 0))
+        self.liste_programmes = cadre.dedans
         self._liste_affichee = None
 
     def _onglet_general(self, onglet):
@@ -5918,9 +6031,7 @@ class Reglages:
         self.detail_qualite.configure(text=texte, text_color=couleur)
 
     def _bouton_discret(self, parent, texte, commande, largeur):
-        return ctk.CTkButton(parent, text=texte, width=largeur or 260, height=32, command=commande,
-                             fg_color=FOND_CREUX, border_width=0, corner_radius=10, text_color=TEXTE,
-                             hover_color=("#EDF1F6", "#2C3039"))
+        return BoutonRelief(parent, texte, commande, largeur)
 
     # ---- état affiché
 
@@ -6055,10 +6166,8 @@ class Reglages:
             ligne = ctk.CTkFrame(self.liste_programmes, fg_color="transparent")
             ligne.pack(fill="x", padx=4, pady=2)
             ctk.CTkLabel(ligne, text=programme, font=ctk.CTkFont("Segoe UI", 13), anchor="w").pack(side="left", padx=4)
-            ctk.CTkButton(ligne, text="Retirer", width=70, height=24, font=ctk.CTkFont("Segoe UI", 12),
-                          fg_color=FOND, border_width=0, corner_radius=8,
-                          text_color=TEXTE, hover_color=("#EDF1F6", "#2C3039"),
-                          command=lambda p=programme: self._retirer_programme(p)).pack(side="right")
+            BoutonRelief(ligne, "Retirer", lambda p=programme: self._retirer_programme(p), 70,
+                         hauteur=24).pack(side="right")
 
     def _mettre_a_jour_programmes(self):
         """Les programmes qui ont une fenêtre ouverte (même réduite), proposés pour la liste."""

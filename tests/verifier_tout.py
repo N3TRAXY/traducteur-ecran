@@ -117,6 +117,18 @@ while relief_anime._animation and time.monotonic() < fin_animation:
     racine_essai.update()
     time.sleep(0.01)
 attendues = relief_anime._images_de("creux", 1.0)
+# La pastille des choix glisse jusqu'au nouveau choix.
+choix_essai = te.ChoixRelief(fenetre_essai.onglets.tab("Accueil"), ["A", "B", "C"], te.ctk.StringVar(value="A"),
+                             lambda v: None)
+choix_essai.pack(fill="x")
+racine_essai.update()
+choix_essai.variable.set("C")
+fin_animation = time.monotonic() + 2
+while choix_essai._glissement and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+verifier(choix_essai._glissement is None and abs(choix_essai.position - 2 * choix_essai._case()) < 1,
+         "choix : la pastille glisse jusqu'au nouveau choix", (choix_essai.position, choix_essai._case()))
 verifier(relief_anime._animation is None and attendues is not None
          and list(relief_anime._images[0].getdata()) == list(attendues[0].getdata())
          and te.melanger_couleurs("#000000", "#FFFFFF", 0.5) == "#808080",
