@@ -5127,6 +5127,35 @@ def image_relief(largeur, hauteur, rayon, creux, sombre, marge, decalage, flou):
     return image.resize((largeur, hauteur), Image.LANCZOS)
 
 
+def couleur_windows(hexa):
+    """« #RRGGBB » -> COLORREF de Windows (0x00BBGGRR)."""
+    rouge, vert, bleu = (int(hexa[i:i + 2], 16) for i in (1, 3, 5))
+    return bleu << 16 | vert << 8 | rouge
+
+
+def teindre_cadre(fenetre):
+    """Le cadre de Windows (barre de titre, bord) aux couleurs du fond, coins arrondis : il se fond dans l'interface en
+    relief, en clair comme en sombre (suit le thème). Windows 11 ; ailleurs, le cadre reste celui de Windows."""
+    def appliquer(_mode=None):
+        try:
+            fenetre.update_idletasks()
+            hwnd = user32.GetParent(fenetre.winfo_id()) or fenetre.winfo_id()
+            sombre = ctk.get_appearance_mode() == "Dark"
+            for attribut, valeur in ((20, int(sombre)),  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                                     (33, 2),  # DWMWA_WINDOW_CORNER_PREFERENCE : arrondis
+                                     (34, couleur_windows(FOND[sombre])),  # DWMWA_BORDER_COLOR : bord invisible
+                                     (35, couleur_windows(FOND[sombre])),  # DWMWA_CAPTION_COLOR
+                                     (36, couleur_windows(TEXTE[sombre]))):  # DWMWA_TEXT_COLOR
+                valeur = ctypes.c_int(valeur)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(wintypes.HWND(hwnd), attribut, ctypes.byref(valeur),
+                                                           ctypes.sizeof(valeur))
+        except Exception:
+            log.debug("Cadre de la fenêtre non teint", exc_info=True)
+
+    appliquer()
+    ctk.AppearanceModeTracker.add(appliquer, fenetre)
+
+
 def melanger_couleurs(a, b, t):
     """La couleur à t (0 à 1) entre a et b (« #RRGGBB »)."""
     a, b = (tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in (a, b))
@@ -5726,6 +5755,7 @@ class Reglages:
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.cacher)
         root.configure(fg_color=FOND)
+        teindre_cadre(root)
         try:
             root.iconbitmap(ICONE_PATH)
         except tk.TclError:
@@ -6481,6 +6511,7 @@ class ChoixLangues:
         fenetre.title("Langues à traduire")
         fenetre.resizable(False, False)
         fenetre.configure(fg_color=FOND)
+        teindre_cadre(fenetre)
         fenetre.protocol("WM_DELETE_WINDOW", self.fermer)
         fenetre.after(250, self._icone)  # customtkinter remet sa propre icône juste après l'ouverture
         gris = Reglages.GRIS
