@@ -17,6 +17,7 @@ import tempfile
 import threading
 import types
 import urllib.error
+from dataclasses import replace
 
 sys.dont_write_bytecode = True  # pas de dossier __pycache__ dans le projet
 sys.stdout.reconfigure(errors="replace")  # une console sans japonais n'arrête pas les vérifications
@@ -56,6 +57,11 @@ verifier(te.developper_argot("Waffffie soooo cute") == "Waffffie so cute", "lett
 verifier(te.touches_du_raccourci("ctrl+alt+t") == (3, 0x54) and te.touches_du_raccourci("t") is None
          and te.touches_du_raccourci("print screen") == (0, 0x2C) and te.touches_du_raccourci("f8") == (0, 0x77),
          "raccourci clavier lu pour Windows (une touche seule : seulement si elle n'écrit rien)")
+# Bug : sur un clavier français (AZERTY), Ctrl+Alt+Z devenait Ctrl+Alt+W (la zone choisie ne marchait pas).
+verifier(te.touches_du_raccourci("ctrl+alt+z") == (3, 0x5A) and te.touches_du_raccourci("ctrl+alt+a") == (3, 0x41)
+         and te.touches_du_raccourci("ctrl+shift+2") == (6, 0x32),
+         "raccourci : la lettre écrite, quel que soit le clavier (AZERTY)",
+         [te.touches_du_raccourci(c) for c in ("ctrl+alt+z", "ctrl+alt+a", "ctrl+shift+2")])
 verifier(te.noms_des_touches("ctrl+alt+enter") == ["Ctrl", "Alt", "Entrée"] and te.noms_des_touches("print screen")
          == ["Impr. écran"] and te.noms_des_touches("left windows+shift+s") == ["Win", "Maj", "S"]
          and te.noms_des_touches("") == ["Aucun"], "raccourcis dessinés avec les noms français des touches")
@@ -617,6 +623,9 @@ lecteur_vide = types.SimpleNamespace(vus=[], a_relire=set(), vus_hors=lambda h: 
                                      _est_pseudo=lambda *a: False)
 app_bout = types.SimpleNamespace(textes_image=list(suivi_bout.morceaux), memoire_fusion={}, suivi=suivi_bout)
 textes_bout = te.Application._fusionner(app_bout, lecteur_vide)
+# (La fenêtre de chaque texte est demandée au vrai écran : une fenêtre ouverte là, comme celle des réglages en haut à
+# gauche, faisait échouer l'essai. La fausse fenêtre est toute l'image.)
+textes_bout = [replace(t, fenetre=(0, 0, 900, 260)) for t in textes_bout]
 traducteur.traduire([t.texte for t in textes_bout], "fr")
 calque_essai = te.Calque.__new__(te.Calque)
 calque_essai.style, calque_essai.facteur_taille = "auto", 1.0

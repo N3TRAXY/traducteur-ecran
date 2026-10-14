@@ -415,6 +415,11 @@ def touches_du_raccourci(combinaison):
             modificateurs |= 0x1 | 0x2
         elif any(m in nom for m in ("ctrl", "alt", "shift", "maj", "windows")):  # (« left ctrl »…)
             modificateurs |= (0x2 if "ctrl" in nom else 0x1 if "alt" in nom else 0x8 if "windows" in nom else 0x4)
+        elif touche is None and len(nom) == 1 and nom.isascii() and nom.isalnum():
+            # Une lettre ou un chiffre : son code est celui de la touche marquée ainsi, quel que soit le clavier.
+            # (Passer par le code physique donnait Ctrl+Alt+W pour Ctrl+Alt+Z sur un clavier français AZERTY : la
+            # zone choisie ne marchait pas.)
+            touche = ord(nom.upper())
         elif touche is None:
             try:
                 touche = user32.MapVirtualKeyW(keyboard.key_to_scan_codes(nom)[0], 1)  # MAPVK_VSC_TO_VK
