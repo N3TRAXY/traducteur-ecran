@@ -86,6 +86,15 @@ class FauxApp:
         return "+".join(te.noms_des_touches(self.config[te.RACCOURCIS[action][0]]))
 
 
+# Neumorphisme : en relief, la lumière en haut à gauche et l'ombre en bas à droite (l'ombre ne cache pas la lumière) ;
+# creusé, l'inverse, à l'intérieur.
+relief_essai = te.image_relief(120, 80, 14, False, False, 11, 3, 4).convert("L")
+creux_essai = te.image_relief(120, 80, 14, True, False, 11, 3, 4).convert("L")
+fond_essai = te.Image.new("L", (1, 1), te.FOND[0]).getpixel((0, 0))
+mesures_relief = [relief_essai.getpixel((60, 8)), fond_essai, relief_essai.getpixel((60, 72)),
+                  creux_essai.getpixel((60, 13)), creux_essai.getpixel((60, 66))]  # (milieux des bords)
+verifier(mesures_relief[0] > fond_essai > mesures_relief[2] and mesures_relief[3] < fond_essai < mesures_relief[4],
+         "neumorphisme : lumière et ombre du bon côté", mesures_relief)
 racine_essai = te.ctk.CTk()
 racine_essai.withdraw()
 fenetre_essai = te.Reglages(racine_essai, FauxApp())
