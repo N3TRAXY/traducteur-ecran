@@ -1296,6 +1296,11 @@ class Lecteur:
         # sites), et champs de saisie (recherche, message en cours d'écriture : jamais couverts).
         self.types_zones_ignorees = {UIA.UIA_TabItemControlTypeId, UIA.UIA_ToolBarControlTypeId,
                                      UIA.UIA_EditControlTypeId}
+        # Spotify : titres, artistes, albums et playlists sont des liens, des lignes de liste, de tableau ou de la
+        # file d'attente, ou le grand titre d'une page (« THE FINALS » devenait « LES FINALES », « Call Me Maybe »
+        # « Appelez-moi peut-être ») ; seul le reste (boutons, textes) est traduit.
+        self.types_noms_spotify = {UIA.UIA_HyperlinkControlTypeId, UIA.UIA_DataItemControlTypeId,
+                                   UIA.UIA_TreeItemControlTypeId, UIA.UIA_ListItemControlTypeId}
 
         condition_type = None
         for t in self.types_texte | self.types_bloc | self.types_zones_ignorees:
@@ -1428,6 +1433,17 @@ class Lecteur:
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         return pid.value == os.getpid()
 
+    def _zone_ignoree(self, programme, type_, type_localise):
+        """Un élément dont on ne traduit rien (ni ce qu'il contient) : onglets, barres d'outils, champs de saisie ;
+        zones de noms de Discord ; titres, artistes et playlists de Spotify."""
+        localise = (type_localise or "").lower()
+        if programme == "discord.exe" and type_ == self.UIA.UIA_GroupControlTypeId and localise in ZONES_DE_NOMS_DISCORD:
+            return True
+        if programme == "spotify.exe" and (type_ in self.types_noms_spotify or (
+                type_ == self.UIA.UIA_TextControlTypeId and localise in ("titre", "heading"))):
+            return True
+        return type_ in self.types_zones_ignorees
+
     def _lire_fenetre(self, hwnd, rect_fenetre, devant):
         vus = []
         programme = programme_de_fenetre(hwnd)
@@ -1459,9 +1475,7 @@ class Lecteur:
             # texte ne compte pas comme « vu » (sinon il bloquerait l'analyse d'image à cet endroit).
             if any(x1 < c and a < x2 and y1 < d and b < y2 for a, b, c, d in devant):
                 continue
-            if type_ in self.types_zones_ignorees or (
-                    programme == "discord.exe" and type_ == self.UIA.UIA_GroupControlTypeId
-                    and (el.CachedLocalizedControlType or "").lower() in ZONES_DE_NOMS_DISCORD):
+            if self._zone_ignoree(programme, type_, el.CachedLocalizedControlType):
                 zones_ignorees.append((x1, y1, x2, y2))
                 nom = " ".join((el.CachedName or "").split())
                 if type_ == self.UIA.UIA_EditControlTypeId and A_TRADUIRE.search(nom) and len(nom) <= 80:

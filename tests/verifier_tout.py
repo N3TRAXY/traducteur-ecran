@@ -57,6 +57,18 @@ verifier(te.developper_argot("Waffffie soooo cute") == "Waffffie so cute", "lett
 verifier(te.touches_du_raccourci("ctrl+alt+t") == (3, 0x54) and te.touches_du_raccourci("t") is None
          and te.touches_du_raccourci("print screen") == (0, 0x2C) and te.touches_du_raccourci("f8") == (0, 0x77),
          "raccourci clavier lu pour Windows (une touche seule : seulement si elle n'écrit rien)")
+# Bug : Spotify traduisait titres, artistes et playlists (« THE FINALS » -> « LES FINALES »). Seuls ses boutons et
+# textes le sont ; ailleurs (navigateur), liens et lignes de tableau restent traduits.
+lecteur_essai = te.Lecteur()
+U = lecteur_essai.UIA
+zones_spotify = [lecteur_essai._zone_ignoree("spotify.exe", t, loc) for t, loc in (
+    (U.UIA_HyperlinkControlTypeId, "lien"), (U.UIA_DataItemControlTypeId, "ligne"),
+    (U.UIA_TreeItemControlTypeId, "Élément de l'arborescence"), (U.UIA_TextControlTypeId, "titre"),
+    (U.UIA_ButtonControlTypeId, "Bouton"), (U.UIA_TextControlTypeId, "Texte"))]
+verifier(zones_spotify == [True, True, True, True, False, False]
+         and not lecteur_essai._zone_ignoree("opera.exe", U.UIA_HyperlinkControlTypeId, "lien")
+         and not lecteur_essai._zone_ignoree("opera.exe", U.UIA_DataItemControlTypeId, "ligne"),
+         "Spotify : titres et noms jamais traduits, ses boutons oui", zones_spotify)
 # Bug : sur un clavier français (AZERTY), Ctrl+Alt+Z devenait Ctrl+Alt+W (la zone choisie ne marchait pas).
 verifier(te.touches_du_raccourci("ctrl+alt+z") == (3, 0x5A) and te.touches_du_raccourci("ctrl+alt+a") == (3, 0x41)
          and te.touches_du_raccourci("ctrl+shift+2") == (6, 0x32),
