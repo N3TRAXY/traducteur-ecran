@@ -31,6 +31,8 @@ os.environ.setdefault("KMP_BLOCKTIME", "0")
 
 import queue
 import re
+import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -112,7 +114,7 @@ MADLAD = {"depot": "Nextcloud-AI/madlad400-3b-mt-ct2-int8", "dossier": "madlad",
 DOSSIER_GPU = os.path.join(APP_DIR, "carte_graphique")
 FICHIERS_GPU = ("cublas64_12.dll", "cublasLt64_12.dll")
 CUBLAS = ("nvidia-cublas-cu12", "12.9.2.10")  # (paquet publié par NVIDIA sur PyPI ; version figée, vérifiée)
-VERSION_PROGRAMME = "2.2.0"
+VERSION_PROGRAMME = "2.3.0"
 # Dépôt GitHub (« compte/dépôt ») où sont publiées les versions (mises à jour) et les grands modèles. Vide :
 # ni mise à jour automatique, ni grand modèle téléchargé (celui-ci peut alors être livré à côté du programme).
 DEPOT_GITHUB = "N3TRAXY/traducteur-ecran"
@@ -194,7 +196,7 @@ CONFIG_DEFAUT = {
     "mots": [],  # « Mes mots » : un mot jamais traduit, ou « mot = traduction imposée », par ligne
     "carte_graphique": True,  # traduire sur la carte graphique NVIDIA s'il y en a une (~10 fois plus vite)
     "grand_modele": True,  # grand modèle de traduction (MADLAD, 3 Go), avec la carte graphique seulement
-    "ia_locale": False,  # IA locale par Ollama : le sens et les expressions (il faut Ollama)
+    "ia_locale": False,  # IA locale (TranslateGemma) : le sens et les expressions (carte graphique, 2,4 Go)
 }
 # Raccourcis clavier, tous changeables (rubrique « Options ») : action -> (clé des réglages, par défaut, rôle).
 # Une combinaison vide : aucun raccourci pour cette action.
@@ -3603,19 +3605,31 @@ class Traducteur:
         return sortie
 
 
-# --------------------------------------------------------------------------- IA locale (Ollama)
+# --------------------------------------------------------------------------- IA locale
 #
-# « Qualité maximale » (réglage) : une IA installée sur ce PC (Ollama) retraduit en arrière-plan ce que les modèles de
-# traduction ont déjà traduit (les phrases). Elle rend le sens et les expressions (« Break a leg » n'est plus « Cassez
-# une jambe » mais « Bonne chance ») ; ses traductions remplacent les premières dès qu'elles sont prêtes. Rien ne part
-# sur internet.
+# « Qualité maximale » (réglage) : une IA sur ce PC retraduit en arrière-plan ce que les modèles de traduction ont déjà
+# traduit (les phrases). Elle rend le sens et les expressions (« Break a leg » n'est plus « Cassez une jambe » mais
+# « Bonne chance ») ; ses traductions remplacent les premières dès qu'elles sont prêtes. Rien ne part sur internet.
+# Elle tourne dans llama.cpp (le moteur dont Ollama se sert lui-même), téléchargé par le programme avec elle : rien à
+# installer. Carte graphique seulement (NVIDIA, AMD ou Intel, par Vulkan) : sur le processeur, plusieurs secondes par
+# phrase.
 
-OLLAMA = "http://127.0.0.1:11434"
-# TranslateGemma 4B (Google, fait pour traduire, 3,3 Go sur la carte graphique) : comparé à TranslateGemma 12B et à
+DOSSIER_IA = os.path.join(APP_DIR, "ia")
+# Moteur : llama-server, version Vulkan (30 Mo, toutes les cartes graphiques), publiée par les auteurs de llama.cpp sur
+# GitHub ; version figée, empreinte vérifiée. Mesuré sur une RTX 5070 Ti : ~0,2 s par phrase, 2,8 Go sur la carte.
+MOTEUR_IA = {"version": "b11617", "fichier": "llama-b11617-bin-win-vulkan-x64.zip",
+             "sha256": "540649b52663e8c9c94613288824dc4c96dfb7b226d2ec2507dfd1279dc4c60c"}
+# TranslateGemma 4B (Google, fait pour traduire ; conditions d'utilisation de Gemma) : comparé à TranslateGemma 12B et à
 # Qwen3 8B sur des expressions, de l'argot, des pages de boutique (japonais, chinois) : presque aussi bon que le 12B,
 # meilleur que Qwen3 (qui inventait : « Ce mod ne fonctionne pas »), et il laisse de la place à un jeu (VRChat) sur la
-# carte. Les boutons courts restent aux modèles habituels : toutes ces IA en faisaient « Projet ouvert » (Open Project).
-MODELE_IA = "translategemma:4b"
+# carte. Au format GGUF, compressé « Q4_K_M » comme celui d'Ollama (2,4 Go), copie libre d'accès de mradermacher sur
+# Hugging Face (celle de Google demande un compte) ; version figée, empreinte vérifiée.
+# Les boutons courts restent aux modèles habituels : toutes ces IA en faisaient « Projet ouvert » (Open Project).
+MODELE_IA = {"depot": "mradermacher/translategemma-4b-it-GGUF", "revision": "d37868f759d2f817a43d28dd80cf9f982ffa62fd",
+             "fichier": "translategemma-4b-it.Q4_K_M.gguf",
+             "sha256": "81200d03e843d2ec1ece6eeafe7d13cb6e5211e1fcd336ade55790b683a08330"}
+MEMOIRE_IA = 4000  # Mo au moins sur la carte graphique (l'IA en prend 2,8)
+VEILLE_IA = 15 * 60  # s sans rien à retraduire : le moteur s'arrête et rend la mémoire de la carte (à un jeu)
 MOTS_IA = 4  # à partir de ce nombre de mots (deux caractères chinois ou japonais valent un mot), l'IA retraduit
 NOMS_ANGLAIS = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "pt": "Portuguese",
                 "nl": "Dutch", "pl": "Polish", "ro": "Romanian", "sv": "Swedish", "tr": "Turkish", "el": "Greek",
@@ -3624,24 +3638,218 @@ NOMS_ANGLAIS = {"fr": "French", "en": "English", "es": "Spanish", "de": "German"
                 "da": "Danish", "nb": "Norwegian", "fi": "Finnish", "bg": "Bulgarian", "he": "Hebrew", "fa": "Persian"}
 
 
-def ollama(chemin, corps=None, delai=120):
-    """Une demande à Ollama (sur ce PC) : sa réponse JSON."""
-    requete = urllib.request.Request(OLLAMA + chemin, json.dumps(corps).encode() if corps is not None else None,
-                                     {"Content-Type": "application/json"})
-    with urllib.request.urlopen(requete, timeout=delai) as reponse:
-        return json.load(reponse)
+def moteur_ia():
+    return os.path.join(DOSSIER_IA, "moteur", "llama-server.exe")
 
 
-def chemin_ollama():
-    return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama app.exe")
+def chemin_modele_ia():
+    return os.path.join(DOSSIER_IA, MODELE_IA["fichier"])
 
 
-def ollama_repond():
+def ia_presente():
+    """Le moteur et le modèle de l'IA sont-ils téléchargés ?"""
+    return os.path.exists(moteur_ia()) and os.path.exists(chemin_modele_ia())
+
+
+def empreinte_sha256(chemin):
+    empreinte = hashlib.sha256()
+    with open(chemin, "rb") as f:
+        while bloc := f.read(1 << 20):
+            empreinte.update(bloc)
+    return empreinte.hexdigest()
+
+
+def installer_moteur_ia(progression, annule):
+    """Télécharge le moteur de l'IA (llama.cpp, 30 Mo, depuis GitHub), vérifié, et n'en garde que le serveur et ses
+    bibliothèques. False si annulé."""
+    lien = f"https://github.com/ggml-org/llama.cpp/releases/download/{MOTEUR_IA['version']}/{MOTEUR_IA['fichier']}"
+    os.makedirs(DOSSIER_TELECHARGEMENTS, exist_ok=True)
+    chemin = os.path.join(DOSSIER_TELECHARGEMENTS, MOTEUR_IA["fichier"])
+
+    def avancer(lu, total):
+        progression(f"IA locale (moteur) : {lu // 2**20} / {total // 2**20} Mo", lu / total if total else 0.0)
+
     try:
-        ollama("/api/version", delai=2)
+        if not _telecharger([lien], chemin, avancer, annule):
+            return False
+        progression("IA locale (moteur) : vérification…", 1.0)
+        if empreinte_sha256(chemin) != MOTEUR_IA["sha256"]:
+            raise OSError("moteur de l'IA abîmé pendant le téléchargement")
+        dossier = os.path.dirname(moteur_ia())
+        provisoire = dossier + ".nouveau"
+        shutil.rmtree(provisoire, ignore_errors=True)
+        with zipfile.ZipFile(chemin) as archive:
+            for nom in archive.namelist():
+                if nom.endswith(".dll") or nom == "llama-server.exe" or nom.startswith("LICENSE"):
+                    archive.extract(nom, provisoire)
+        if not os.path.exists(os.path.join(provisoire, "llama-server.exe")):
+            raise RuntimeError("archive du moteur de l'IA incomplète")
+        shutil.rmtree(dossier, ignore_errors=True)
+        os.replace(provisoire, dossier)
+        log.info("Moteur de l'IA installé (llama.cpp %s)", MOTEUR_IA["version"])
         return True
-    except Exception:
-        return False
+    finally:
+        try:
+            os.remove(chemin)
+        except OSError:
+            pass
+
+
+def installer_modele_ia(progression, annule):
+    """Télécharge le modèle de l'IA (TranslateGemma 4B, 2,4 Go, depuis Hugging Face), vérifié. False si annulé."""
+    lien = f"https://huggingface.co/{MODELE_IA['depot']}/resolve/{MODELE_IA['revision']}/{MODELE_IA['fichier']}"
+    os.makedirs(DOSSIER_TELECHARGEMENTS, exist_ok=True)
+    chemin = os.path.join(DOSSIER_TELECHARGEMENTS, MODELE_IA["fichier"])
+
+    def avancer(lu, total):
+        progression(f"IA locale : {lu // 2**20} / {total // 2**20} Mo", lu / total if total else 0.0)
+
+    try:
+        if not _telecharger([lien], chemin, avancer, annule):
+            return False
+        progression("IA locale : vérification…", 1.0)
+        if empreinte_sha256(chemin) != MODELE_IA["sha256"]:
+            raise OSError("modèle de l'IA abîmé pendant le téléchargement")
+        os.makedirs(DOSSIER_IA, exist_ok=True)
+        os.replace(chemin, chemin_modele_ia())
+        log.info("Modèle de l'IA installé (%s)", MODELE_IA["fichier"])
+        return True
+    finally:
+        try:
+            os.remove(chemin)
+        except OSError:
+            pass
+
+
+def choisir_carte_ia(liste):
+    """D'après la liste des cartes graphiques du moteur (llama-server -v --list-devices) : (« Vulkan0 », nom) de la carte
+    où l'IA tournera, ou None. Une vraie carte (pas la puce graphique du processeur, « uma: 1 » : trop lente) avec assez
+    de mémoire ; la plus grande s'il y en a plusieurs."""
+    integrees = {numero for numero, uma in re.findall(r"ggml_vulkan: (\d+) = .*?\| uma: (\d)", liste) if uma == "1"}
+    cartes = [(int(memoire), f"Vulkan{numero}", nom) for numero, nom, memoire
+              in re.findall(r"^\s*Vulkan(\d+): (.+?) \((\d+) MiB, \d+ MiB free\)", liste, re.M)
+              if numero not in integrees and int(memoire) >= MEMOIRE_IA]
+    return max(cartes)[1:] if cartes else None
+
+
+def carte_pour_ia():
+    """La carte graphique où l'IA tournera (voir choisir_carte_ia), demandée au moteur. OSError s'il ne se lance pas."""
+    try:
+        sortie = subprocess.run([moteur_ia(), "-v", "--list-devices"], cwd=os.path.dirname(moteur_ia()),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                timeout=60, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    except subprocess.SubprocessError as e:
+        raise OSError(str(e)) from e
+    return choisir_carte_ia(sortie.decode("utf-8", "replace"))
+
+
+class _LimitesTache(ctypes.Structure):
+    """JOBOBJECT_EXTENDED_LIMIT_INFORMATION (Windows)."""
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD),
+                ("IoInfo", ctypes.c_uint64 * 6), ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+_TACHE_WINDOWS = []  # (le « job » Windows des processus lancés par le programme, créé une fois)
+
+
+def lier_au_programme(processus):
+    """Ce processus s'arrêtera avec le programme, même si celui-ci plante : il est mis dans un « job » Windows qui tue
+    ses processus quand il est fermé, ce que Windows fait à la fin du programme."""
+    noyau = ctypes.WinDLL("kernel32", use_last_error=True)
+    noyau.CreateJobObjectW.restype = wintypes.HANDLE
+    noyau.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    noyau.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    if not _TACHE_WINDOWS:
+        tache = noyau.CreateJobObjectW(None, None)
+        limites = _LimitesTache(LimitFlags=0x2000)  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not tache or not noyau.SetInformationJobObject(tache, 9, ctypes.byref(limites), ctypes.sizeof(limites)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        _TACHE_WINDOWS.append(tache)
+    if not noyau.AssignProcessToJobObject(_TACHE_WINDOWS[0], int(processus._handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+class MoteurIA:
+    """Le moteur de l'IA (llama-server) lancé par le programme : invisible, joignable depuis ce PC seulement (adresse
+    locale, port au hasard, clé secrète : une page web ne peut pas s'en servir). Démarré au premier besoin, arrêté après
+    VEILLE_IA sans travail, quand l'IA est coupée et quand le programme se ferme (même s'il plante)."""
+
+    def __init__(self):
+        self.carte = None  # (« Vulkan0 », nom) où tourne l'IA ; False : pas de carte adaptée ; None : pas encore cherchée
+        self.processus = None
+        self.port, self.cle = 0, ""
+        self.servi_le = 0.0
+        self.verrou = threading.Lock()
+        self.ouvreur = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # (jamais par un proxy)
+
+    def demarrer(self):
+        """Lance le moteur s'il ne tourne pas, et attend qu'il ait chargé le modèle sur la carte (quelques secondes)."""
+        with self.verrou:
+            if self.processus is not None and self.processus.poll() is None:
+                return
+            with socket.socket() as essai:  # (un port libre)
+                essai.bind(("127.0.0.1", 0))
+                self.port = essai.getsockname()[1]
+            self.cle = secrets.token_hex(16)
+            # (Le modèle est désigné depuis son dossier : un chemin avec des lettres d'une autre langue que celle de
+            # Windows, dans le nom d'utilisateur, ne passerait pas.)
+            with open(os.path.join(DOSSIER_IA, "journal-moteur.txt"), "wb") as journal:
+                self.processus = subprocess.Popen(
+                    [moteur_ia(), "-m", MODELE_IA["fichier"], "--host", "127.0.0.1", "--port", str(self.port),
+                     "--api-key", self.cle, "--device", self.carte[0], "-ngl", "99", "-c", "4096", "-np", "1"],
+                    cwd=DOSSIER_IA, stdout=journal, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                lier_au_programme(self.processus)
+            except OSError:
+                log.exception("IA locale : moteur non lié au programme")
+            log.info("IA locale : démarrage du moteur sur %s", self.carte[1])
+            fin = time.monotonic() + 180
+            while time.monotonic() < fin:
+                if self.processus.poll() is not None:
+                    code, self.processus = self.processus.returncode, None
+                    raise RuntimeError(f"le moteur de l'IA s'est arrêté (code {code}, voir ia\\journal-moteur.txt)")
+                try:
+                    with self.ouvreur.open(f"http://127.0.0.1:{self.port}/health", timeout=2):
+                        self.servi_le = time.monotonic()
+                        return
+                except (OSError, HTTPException):  # (503 : le modèle se charge encore)
+                    time.sleep(0.5)
+            self.processus.kill()
+            self.processus = None
+            raise TimeoutError("le moteur de l'IA ne démarre pas (voir ia\\journal-moteur.txt)")
+
+    def completer(self, invite, longueur):
+        """La suite de l'invite écrite par l'IA (au plus `longueur` jetons)."""
+        self.demarrer()
+        corps = {"prompt": invite, "n_predict": longueur, "temperature": 0, "stop": ["<end_of_turn>"]}
+        requete = urllib.request.Request(f"http://127.0.0.1:{self.port}/completion", json.dumps(corps).encode(),
+                                         {"Content-Type": "application/json", "Authorization": "Bearer " + self.cle})
+        with self.ouvreur.open(requete, timeout=120) as reponse:
+            texte = json.load(reponse)["content"]
+        self.servi_le = time.monotonic()
+        return texte
+
+    def en_veille(self):
+        """Arrête le moteur s'il n'a rien fait depuis VEILLE_IA : la carte graphique retrouve sa mémoire."""
+        if self.processus is not None and time.monotonic() - self.servi_le > VEILLE_IA:
+            log.info("IA locale : moteur arrêté (rien à retraduire depuis %d min)", VEILLE_IA // 60)
+            self.arreter()
+
+    def arreter(self):
+        with self.verrou:
+            processus, self.processus = self.processus, None
+        if processus is not None and processus.poll() is None:
+            processus.terminate()
+            try:
+                processus.wait(5)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 class IALocale:
@@ -3659,6 +3867,7 @@ class IALocale:
         self.reveil = threading.Event()
         self.actif = False
         self.etat = ""
+        self.moteur = MoteurIA()
 
     def a_ameliorer(self, texte):
         """Ce que l'IA retraduit : une phrase (pas un bouton court), sans code protégé, sans « Mes mots », pas un
@@ -3686,6 +3895,7 @@ class IALocale:
         while not arret.is_set():
             self.reveil.wait(5)
             self.reveil.clear()
+            self.moteur.en_veille()
             while self.actif and not arret.is_set() and self.file:
                 with self.verrou:
                     lot = list(self.file)[:self.LOT]
@@ -3701,7 +3911,7 @@ class IALocale:
                     resultats = self._traduire(textes, cible)
                 except Exception as e:
                     log.warning("IA locale : pas de réponse (%s)", e)
-                    self.etat = "Ollama ne répond pas : est-il lancé ?"
+                    self.etat = "le moteur de l'IA ne répond pas (voir journal.txt)"
                     with self.verrou:
                         self.faites.difference_update(lot)  # (réessayés plus tard)
                     arret.wait(10)
@@ -3744,9 +3954,10 @@ class IALocale:
         return traduit.upper() if self.traducteur._en_capitales(texte) else traduit
 
     def _traduire(self, textes, cible):
-        """Une traduction par texte (TranslateGemma : un texte par demande, avec la consigne qu'il attend)."""
+        """Une traduction par texte (TranslateGemma : un texte par demande, avec la consigne qu'il attend) ; "" pour un
+        texte que le moteur refuse (trop long pour lui)."""
         sortie = []
-        for i, texte in enumerate(textes):
+        for texte in textes:
             with self.traducteur.verrou:
                 source = self.traducteur._langue(texte, cible) or "en"
             de, vers = NOMS_ANGLAIS.get(source, "English"), NOMS_ANGLAIS.get(cible, "French")
@@ -3755,10 +3966,14 @@ class IALocale:
                       f"vocabulary, and cultural sensitivities.\nProduce only the {vers} translation, without any "
                       f"additional explanations or commentary. Please translate the following {de} text into "
                       f"{vers}:\n\n\n{texte}")
-            reponse = ollama("/api/chat", {"model": MODELE_IA, "stream": False, "keep_alive": "15m",
-                                           "options": {"temperature": 0, "num_predict": 2 * len(texte) + 64},
-                                           "messages": [{"role": "user", "content": invite}]})
-            sortie.append(reponse["message"]["content"])
+            try:
+                sortie.append(self.moteur.completer(f"<start_of_turn>user\n{invite}<end_of_turn>\n<start_of_turn>model\n",
+                                                    min(2 * len(texte) + 64, 1536)))
+            except urllib.error.HTTPError as e:
+                if e.code != 400:
+                    raise
+                log.warning("IA locale : texte refusé par le moteur (%d caractères)", len(texte))
+                sortie.append("")
         return sortie
 
 
@@ -5392,9 +5607,11 @@ class Reglages:
                 (self.grand_modele, self.detail_grand_modele, "grand_modele", getattr(app, "etat_grand_modele", ""),
                  "Bien meilleur, toutes langues · 3 Go, avec la carte graphique", "✓ Actif : toutes les langues"),
                 (self.ia_locale, self.detail_ia, "ia_locale", getattr(app, "etat_ia", ""),
-                 "Le sens et les expressions des phrases · avec Ollama, 3,3 Go", "✓ Active : le sens et les expressions")):
-            (interrupteur.select if app.config.get(cle) else interrupteur.deselect)()
+                 "Le sens et les expressions des phrases · 2,4 Go, avec la carte graphique",
+                 "✓ Active : le sens et les expressions")):
             etat = etat or ("Désactivé" if not app.config.get(cle) else "")
+            (interrupteur.select if app.config.get(cle) and not etat.startswith("Pas de carte")
+             else interrupteur.deselect)()
             if etat in ("Active", "Actif"):
                 texte, couleur = actif, ("#1E8E3E", "#5BD17F")
             else:
@@ -6817,12 +7034,14 @@ class Application:
         avec_carte = self.config["carte_graphique"] and carte_nvidia()
         carte = avec_carte and not bibliotheque_gpu_presente()
         madlad = avec_carte and self.config["grand_modele"] and not madlad_present()
-        if not manquantes and not grands and not carte and not madlad:
+        # IA locale : son moteur (30 Mo), puis, s'il trouve une carte graphique qui convient, son modèle (2,4 Go).
+        ia = self.config["ia_locale"] and self.ia.moteur.carte is not False and not ia_presente()
+        if not manquantes and not grands and not carte and not madlad and not ia:
             self.reglages.afficher_langues()
             return False
         log.info("Téléchargement des modèles : %s", ", ".join(
             [f"{de} → {vers}" for de, vers in manquantes] + grands + (["carte graphique"] if carte else [])
-            + (["grand modèle de traduction"] if madlad else [])))
+            + (["grand modèle de traduction"] if madlad else []) + (["IA locale"] if ia else [])))
         envoye_le = [0.0]
 
         def progression(texte, fraction):
@@ -6858,6 +7077,19 @@ class Application:
                         self.traducteur.oublier_madlad()  # (chargé à la prochaine traduction ; tout est retraduit)
                     except Exception:
                         log.exception("Grand modèle de traduction non téléchargé")
+                if ia:  # (en échec, les modèles habituels traduisent : on le note, sans rien bloquer)
+                    def ia_coupee():
+                        return self.arret.is_set() or not self.config["ia_locale"]
+
+                    try:  # (coupée pendant le téléchargement : il s'arrête, la suite continue)
+                        if (os.path.exists(moteur_ia()) or installer_moteur_ia(progression, ia_coupee)) \
+                                and self._chercher_carte_ia() \
+                                and (os.path.exists(chemin_modele_ia()) or installer_modele_ia(progression, ia_coupee)):
+                            threading.Thread(target=self._preparer_ia, daemon=True).start()
+                    except Exception as e:
+                        log.exception("IA locale non téléchargée")
+                        self.ia.etat = "téléchargement impossible : " + (str(e)[:60] or "erreur")
+                    self.commandes.put(("etat_carte",))
             except urllib.error.HTTPError as e:
                 log.exception("Téléchargement des modèles impossible")
                 erreur = f"le serveur des modèles a refusé (erreur {e.code}), réessaie plus tard"
@@ -6934,11 +7166,17 @@ class Application:
         sauver_config(self.config)
         self.calque.fondu = actif
 
-    # ---- IA locale (Ollama)
+    # ---- IA locale
 
     @property
     def etat_ia(self):
-        return "Désactivé" if not self.config["ia_locale"] else self.ia.etat
+        if self.ia.moteur.carte is False:
+            return "Pas de carte graphique adaptée sur ce PC"
+        if not self.config["ia_locale"]:
+            return "Désactivé"
+        if self.ia.etat:  # (« Active », démarrage, erreur)
+            return self.ia.etat
+        return "téléchargement de 2,4 Go au premier usage" if not ia_presente() else "démarrage…"
 
     def _ia_prete(self):
         """(Fil de l'IA.) De meilleures traductions sont prêtes : l'écran se met à jour, et les pages web (l'extension
@@ -6949,54 +7187,52 @@ class Application:
             self.traducteur.generation += 1
         self.commandes.put(("etat_carte",))
 
+    def _chercher_carte_ia(self):
+        """(Fil à part.) La carte graphique de l'IA, demandée une fois au moteur. False si aucune ne convient."""
+        moteur = self.ia.moteur
+        if moteur.carte is None:
+            moteur.carte = carte_pour_ia() or False
+            log.info("IA locale : %s", f"carte graphique {moteur.carte[1]}" if moteur.carte
+                     else "pas de carte graphique adaptée (il en faut une avec 4 Go)")
+        return moteur.carte
+
     def _preparer_ia(self):
-        """(Fil à part.) Ollama lancé, le modèle de l'IA téléchargé (une fois), puis l'IA se met au travail."""
+        """(Fil à part.) Le moteur et le modèle de l'IA téléchargés (par synchroniser_modeles), le moteur démarre sur la
+        carte graphique, puis l'IA se met au travail."""
         ia = self.ia
-        if not ollama_repond():
-            if not os.path.exists(chemin_ollama()):
-                ia.etat = "installe d'abord Ollama (gratuit) : ollama.com"
-                self.commandes.put(("etat_carte",))
-                return
-            ia.etat = "lancement d'Ollama…"
-            self.commandes.put(("etat_carte",))
-            subprocess.Popen([chemin_ollama()])
-            for _ in range(30):
-                if ollama_repond() or self.arret.wait(1):
-                    break
+        if not self.config["ia_locale"] or not ia_presente():
+            return
         try:
-            modeles = {m.get("name") for m in ollama("/api/tags", delai=10).get("models", [])}
-            if MODELE_IA not in modeles:
-                requete = urllib.request.Request(OLLAMA + "/api/pull", json.dumps({"model": MODELE_IA}).encode(),
-                                                 {"Content-Type": "application/json"})
-                with urllib.request.urlopen(requete, timeout=60) as reponse:
-                    for ligne in reponse:  # (une ligne d'avancement à la fois)
-                        avancement = json.loads(ligne)
-                        if avancement.get("total"):
-                            ia.etat = (f"téléchargement de l'IA : {avancement.get('completed', 0) / 2**30:.1f} / "
-                                       f"{avancement['total'] / 2**30:.1f} Go")
-                            self.commandes.put(("etat_carte",))
-                        if avancement.get("error"):
-                            raise OSError(avancement["error"])
-                        if not self.config["ia_locale"] or self.arret.is_set():
-                            return
-            ia.etat = "Active"
-            ia.actif = self.config["ia_locale"]
-            log.info("IA locale prête (%s)", MODELE_IA)
-            self.reveil.set()  # (ce qui est à l'écran lui est proposé)
+            if self._chercher_carte_ia():
+                ia.etat = "démarrage…"
+                self.commandes.put(("etat_carte",))
+                ia.moteur.demarrer()
+                ia.etat = "Active"
+                ia.actif = self.config["ia_locale"]
+                log.info("IA locale prête (%s)", MODELE_IA["fichier"])
+                self.reveil.set()  # (ce qui est à l'écran lui est proposé)
         except Exception as e:
             log.exception("IA locale indisponible")
-            ia.etat = "Ollama ne répond pas : " + str(e)[:50]
+            ia.etat = "le moteur de l'IA ne démarre pas : " + (str(e)[:60] or "erreur")
+        if not self.config["ia_locale"]:  # (coupée entre-temps)
+            ia.moteur.arreter()
         self.commandes.put(("etat_carte",))
 
     def choisir_ia(self, actif):
         self.config["ia_locale"] = actif
         sauver_config(self.config)
+        self.ia.etat = ""
         if actif:
-            if not ollama_repond() and not os.path.exists(chemin_ollama()):
-                os.startfile("https://ollama.com/download")  # (à installer une fois ; le réglage attend)
-            threading.Thread(target=self._preparer_ia, daemon=True).start()
+            if ia_presente():
+                threading.Thread(target=self._preparer_ia, daemon=True).start()
+            else:
+                self.synchroniser_modeles()  # (télécharge le moteur et le modèle, puis revient à _preparer_ia)
         else:
-            threading.Thread(target=self.ia.oublier, daemon=True).start()
+            def couper():
+                self.ia.oublier()
+                self.ia.moteur.arreter()
+
+            threading.Thread(target=couper, daemon=True).start()
             self.reveil.set()
         self.reglages.afficher_carte()
 
@@ -7324,6 +7560,7 @@ class Application:
         log.info("Arrêt")
         self.traducteur.sauver()
         self.arret.set()
+        self.ia.moteur.arreter()
         self.reveil.set()
         self.reveil_accessibilite.set()
         keyboard.unhook_all()

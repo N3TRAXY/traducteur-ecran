@@ -53,10 +53,10 @@ QUALITÉ DES TRADUCTIONS (rubrique « Langues », chacun s'active ou se coupe)
   - Grand modèle de traduction : bien meilleur pour le japonais, le chinois, le
     coréen, l'espagnol… (3 Go, une seule fois ; il faut la carte graphique).
   - IA locale (qualité maximale) : une IA sur ton PC retraduit les phrases avec
-    leur sens et leurs expressions (« Break a leg » → « Bonne chance »). Il
-    faut installer Ollama (gratuit, ollama.com) ; l'IA (3,3 Go) se télécharge
-    toute seule. La traduction rapide s'affiche d'abord, puis la meilleure la
-    remplace une seconde plus tard.
+    leur sens et leurs expressions (« Break a leg » → « Bonne chance »). Rien
+    à installer : l'IA (2,4 Go) se télécharge toute seule. Il faut une carte
+    graphique (NVIDIA, AMD ou Intel) avec au moins 4 Go. La traduction rapide
+    s'affiche d'abord, puis la meilleure la remplace juste après.
 
 UN PROBLÈME ?
   « Options » → « Signaler un problème » : la page GitHub s'ouvre, préremplie,

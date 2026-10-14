@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import types
+import urllib.error
 
 sys.dont_write_bytecode = True  # pas de dossier __pycache__ dans le projet
 sys.stdout.reconfigure(errors="replace")  # une console sans japonais n'arrête pas les vérifications
@@ -373,22 +374,35 @@ te.madlad_present = sauve_present
 verifier(chemins_madlad == ([("ja", "fr")], [("en", "fr")]) and madlad_recus[0][:1] == ["<2fr>"]
          and madlad_recus[0][-1] == "</s>" and sortie_madlad == ["Tu veux jouer ?"] and sans_carte == [("ja", "en"), ("en", "fr")],
          "grand modèle : direct sauf l'anglais, « <2fr> » en tête, rien sans la carte graphique", (chemins_madlad, madlad_recus))
-# IA locale (Ollama) : seulement les phrases ; ses traductions remplacent les premières ; un nombre changé est refusé ;
-# la couper remet les traductions habituelles.
+# IA locale (moteur intégré) : seulement les phrases ; ses traductions remplacent les premières ; un nombre changé est
+# refusé ; un texte refusé par le moteur garde sa traduction ; la couper remet les traductions habituelles.
 essai_ia_trad = te.Traducteur.__new__(te.Traducteur)
 essai_ia_trad.verrou, essai_ia_trad.mots, essai_ia_trad.generation = threading.RLock(), te.MesMots(), 0
 essai_ia_trad.cache = {("Break a leg at your show tomorrow!", "fr"): "Cassez une jambe à votre spectacle demain !",
                        ("I have 3 cats at home now.", "fr"): "J'ai 3 chats à la maison maintenant.",
-                       ("Open Project", "fr"): "Ouvrir le projet"}
+                       ("Open Project", "fr"): "Ouvrir le projet",
+                       ("This text is far too long for the engine.", "fr"): "Ce texte est bien trop long pour le moteur."}
 essai_ia_trad.cache_modifie = False
 essai_ia_trad._langue = lambda texte, cible: "en"
 reponses_ia = {"Break a leg at your show tomorrow!": "Bonne chance pour ton spectacle demain !",
                "I have 3 cats at home now.": "J'ai 4 chats à la maison."}
-sauve_ollama = te.ollama
-te.ollama = lambda chemin, corps=None, delai=120: {"message": {"content": next(
-    v for k, v in reponses_ia.items() if k in corps["messages"][0]["content"])}}
+invites_ia = []
+
+
+class FauxMoteur:
+    def completer(self, invite, longueur):
+        invites_ia.append(invite)
+        if "far too long" in invite:
+            raise urllib.error.HTTPError("http://127.0.0.1", 400, "trop long", {}, None)
+        return next(v for k, v in reponses_ia.items() if k in invite)
+
+    def en_veille(self):
+        pass
+
+
 pretes = []
 ia = te.IALocale(essai_ia_trad, lambda: pretes.append(1))
+ia.moteur = FauxMoteur()
 ia.actif = True
 ia.proposer(list(k for k, _ in essai_ia_trad.cache), "fr")
 proposes = [t for t, _ in ia.file]
@@ -403,13 +417,40 @@ apres_ia = dict(essai_ia_trad.cache)
 ia.oublier()
 arret_ia.set()
 ia.reveil.set()
-te.ollama = sauve_ollama
 verifier("Open Project" not in proposes
          and apres_ia[("Break a leg at your show tomorrow!", "fr")].replace("\xa0", " ") == "Bonne chance pour ton spectacle demain !"
          and apres_ia[("I have 3 cats at home now.", "fr")] == "J'ai 3 chats à la maison maintenant."
-         and ("Break a leg at your show tomorrow!", "fr") not in essai_ia_trad.cache and pretes,
-         "IA locale : phrases seulement, traduction remplacée, nombre changé refusé, coupée : traductions habituelles",
-         (proposes, apres_ia))
+         and apres_ia[("This text is far too long for the engine.", "fr")] == "Ce texte est bien trop long pour le moteur."
+         and ("Break a leg at your show tomorrow!", "fr") not in essai_ia_trad.cache and pretes
+         and invites_ia and all(i.startswith("<start_of_turn>user\nYou are a professional English (en) to French (fr)")
+                                and i.endswith("<end_of_turn>\n<start_of_turn>model\n") for i in invites_ia),
+         "IA locale : phrases seulement, traduction remplacée, nombre changé et texte refusé gardés, consigne de "
+         "TranslateGemma, coupée : traductions habituelles", (proposes, apres_ia, invites_ia[:1]))
+# La carte graphique de l'IA : une vraie carte avec assez de mémoire (pas la puce graphique du processeur), la plus
+# grande ; aucune sinon.
+liste_cartes = ("ggml_vulkan: Found 2 Vulkan devices:\n"
+                "ggml_vulkan: 0 = Intel(R) UHD Graphics 770 (Intel Corporation) | uma: 1 | fp16: 1 | warp size: 32\n"
+                "ggml_vulkan: 1 = AMD Radeon RX 7800 XT (AMD proprietary driver) | uma: 0 | fp16: 1 | warp size: 64\n"
+                "Available devices:\n  Vulkan0: Intel(R) UHD Graphics 770 (16263 MiB, 15800 MiB free)\n"
+                "  Vulkan1: AMD Radeon RX 7800 XT (16368 MiB, 15900 MiB free)\n")
+petite_carte = ("ggml_vulkan: 0 = NVIDIA GeForce GTX 1050 (NVIDIA) | uma: 0 | fp16: 0\n"
+                "Available devices:\n  Vulkan0: NVIDIA GeForce GTX 1050 (2048 MiB, 1900 MiB free)\n")
+verifier(te.choisir_carte_ia(liste_cartes) == ("Vulkan1", "AMD Radeon RX 7800 XT")
+         and te.choisir_carte_ia(petite_carte) is None and te.choisir_carte_ia("Available devices:\n") is None,
+         "IA locale : vraie carte graphique avec 4 Go, jamais la puce du processeur",
+         (te.choisir_carte_ia(liste_cartes), te.choisir_carte_ia(petite_carte)))
+# Ce que dit l'interrupteur de l'IA : pas de carte (même coupée), coupée, à télécharger, démarrage, active.
+etat_app = types.SimpleNamespace(config={"ia_locale": False}, ia=types.SimpleNamespace(etat="", moteur=te.MoteurIA()))
+sauve_presente = te.ia_presente
+etats_ia = []
+for carte, actif, presente, etat in ((False, True, True, ""), (None, False, False, ""), (None, True, False, ""),
+                                     (("Vulkan0", "RTX"), True, True, ""), (("Vulkan0", "RTX"), True, True, "Active")):
+    etat_app.ia.moteur.carte, etat_app.config["ia_locale"], etat_app.ia.etat = carte, actif, etat
+    te.ia_presente = lambda presente=presente: presente
+    etats_ia.append(te.Application.etat_ia.fget(etat_app))
+te.ia_presente = sauve_presente
+verifier(etats_ia == ["Pas de carte graphique adaptée sur ce PC", "Désactivé", "téléchargement de 2,4 Go au premier usage",
+                      "démarrage…", "Active"], "IA locale : état affiché sous l'interrupteur", etats_ia)
 
 # --------------------------------------------------------------------------- avec les vrais modèles
 print("Traductions (vrais modèles)")
