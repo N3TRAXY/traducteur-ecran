@@ -5262,7 +5262,9 @@ class Relief(ctk.CTkFrame):
         self.fond.place(x=0, y=0, relwidth=1, relheight=1)
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        retrait = marge + (rayon // 2 if interieur is None else interieur)
+        # (Le contenu, rectangulaire, commence assez loin du bord pour ne pas déborder des coins arrondis : sinon il
+        # cache l'ombre dans les coins, qui paraissent carrés.)
+        retrait = marge + (rayon // 2 if interieur is None else max(interieur, -(-3 * rayon // 10)))
         if etat == "creux":  # (le contenu commence après l'ombre intérieure : il ne la coupe pas en angle)
             retrait = max(retrait, marge + decalage + round(1.2 * flou) + 1)
         self.dedans = ctk.CTkFrame(self, fg_color=FOND, corner_radius=0)
