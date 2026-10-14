@@ -37,6 +37,9 @@ function montrer(reponse) {
   }
   actif.checked = reponse.actif;
   langue.value = reponse.langue;
+  // Thème choisi dans le programme (« systeme » : celui de Windows, par la feuille de style).
+  if (reponse.theme === "clair" || reponse.theme === "sombre") document.documentElement.dataset.theme = reponse.theme;
+  else delete document.documentElement.dataset.theme;
   // (Comparé ici aussi : la fenêtre est toujours la version à jour, même si le reste ne l'est pas.)
   const aJour = !reponse.extension || reponse.extension === chrome.runtime.getManifest().version;
   if (!aJour || reponse.aRecharger) {

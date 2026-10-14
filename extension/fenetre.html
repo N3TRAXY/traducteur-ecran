@@ -3,41 +3,71 @@
 <head>
 <meta charset="utf-8">
 <style>
-  :root { --fond: #12131a; --carte: #1c1e2a; --bord: #2a2c3a; --texte: #e4e6ee; --gris: #9aa0b4; --accent: #6366f1; }
+  /* Neumorphisme, comme la fenêtre du programme : tout est de la couleur du fond, en relief (lumière en haut à
+     gauche, ombre en bas à droite) ou creusé. Thème : celui du programme (data-theme), sinon celui de Windows. */
+  :root { --fond: #e4e9f0; --texte: #2f3645; --gris: #7a8499; --accent: #2563eb; --accent-survol: #1d4ed8;
+          --lumiere: rgba(255, 255, 255, 1); --ombre: rgba(163, 177, 198, .6); --vert: #1e9e4a; --jaune: #c48a00;
+          --rouge: #d64545; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="clair"]) { --fond: #252831; --texte: #e6e9f0; --gris: #8c93a6; --accent: #3b82f6;
+      --lumiere: rgba(52, 57, 70, 1); --ombre: rgba(14, 15, 19, 1); --vert: #5bd17f; --jaune: #e8b30c; --rouge: #f07b7b; }
+  }
+  :root[data-theme="sombre"] { --fond: #252831; --texte: #e6e9f0; --gris: #8c93a6; --accent: #3b82f6;
+    --lumiere: rgba(52, 57, 70, 1); --ombre: rgba(14, 15, 19, 1); --vert: #5bd17f; --jaune: #e8b30c; --rouge: #f07b7b; }
+  :root { --relief: -4px -4px 9px var(--lumiere), 4px 4px 9px var(--ombre);
+          --relief-leger: -2px -2px 5px var(--lumiere), 2px 2px 5px var(--ombre);
+          --creux: inset 3px 3px 6px var(--ombre), inset -3px -3px 6px var(--lumiere); }
   * { box-sizing: border-box; }
-  body { width: 320px; margin: 0; padding: 14px; font: 13px "Segoe UI", system-ui, sans-serif; background: var(--fond);
-         color: var(--texte); }
-  .entete { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-  .entete img { width: 34px; height: 34px; border-radius: 9px; }
+  body { width: 320px; margin: 0; padding: 16px; font: 13px "Segoe UI", system-ui, sans-serif; background: var(--fond);
+         color: var(--texte); transition: background .25s, color .25s; }
+  /* Apparition : chaque bloc arrive en glissant vers le haut, l'un après l'autre. */
+  @keyframes arriver { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  body > * { animation: arriver .35s cubic-bezier(.2, .8, .2, 1) both; }
+  body > :nth-child(2) { animation-delay: .05s; }
+  body > :nth-child(3) { animation-delay: .1s; }
+  body > :nth-child(4) { animation-delay: .15s; }
+  body > :nth-child(5) { animation-delay: .2s; }
+  .entete { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+  .entete img { width: 38px; height: 38px; border-radius: 11px; box-shadow: var(--relief-leger); }
   h1 { font-size: 15px; margin: 0; font-weight: 600; }
   .etat { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gris); margin-top: 2px; }
-  .point { width: 8px; height: 8px; border-radius: 50%; background: #5bd17f; flex: none; }
-  .etat.pause .point { background: #e8b30c; }
-  .etat.erreur { color: #f07b7b; }
-  .etat.erreur .point { background: #f07b7b; }
-  .carte { background: var(--carte); border-radius: 12px; padding: 12px 14px; margin-top: 8px; }
-  .principale { display: flex; align-items: center; justify-content: space-between; padding: 14px; }
+  .point { width: 8px; height: 8px; border-radius: 50%; background: var(--vert); flex: none;
+           box-shadow: 0 0 6px var(--vert); transition: background .25s, box-shadow .25s; }
+  .etat.pause .point { background: var(--jaune); box-shadow: 0 0 6px var(--jaune); }
+  .etat.erreur { color: var(--rouge); }
+  .etat.erreur .point { background: var(--rouge); box-shadow: 0 0 6px var(--rouge); }
+  .carte { background: var(--fond); border-radius: 16px; padding: 12px 14px; margin-top: 12px; box-shadow: var(--relief); }
+  .principale { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; }
   .principale strong { font-size: 14px; display: block; }
   small { display: block; color: var(--gris); font-size: 11px; margin-top: 2px; word-break: break-all; }
   .ligne { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-  .ligne + .ligne { border-top: 1px solid var(--bord); margin-top: 10px; padding-top: 10px; }
-  .interrupteur { position: relative; width: 42px; height: 24px; flex: none; }
+  .ligne + .ligne { margin-top: 12px; }
+  /* Interrupteur : rail creusé, bouton rond en relief qui glisse ; bleu quand il est allumé. */
+  .interrupteur { position: relative; width: 50px; height: 28px; flex: none; }
   .interrupteur input { opacity: 0; width: 0; height: 0; }
-  .glissiere { position: absolute; inset: 0; background: #3a3d4e; border-radius: 12px; cursor: pointer; transition: .15s; }
-  .glissiere::before { content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px;
-                       background: #fff; border-radius: 50%; transition: .15s; }
+  .glissiere { position: absolute; inset: 0; background: var(--fond); border-radius: 14px; cursor: pointer;
+               box-shadow: var(--creux); transition: background .25s; }
+  .glissiere::before { content: ""; position: absolute; width: 20px; height: 20px; left: 4px; top: 4px;
+                       background: var(--fond); border-radius: 50%; box-shadow: var(--relief-leger);
+                       transition: transform .3s cubic-bezier(.3, 1.4, .5, 1), background .25s; }
   input:checked + .glissiere { background: var(--accent); }
-  input:checked + .glissiere::before { transform: translateX(18px); }
+  input:checked + .glissiere::before { transform: translateX(22px); background: #fff; }
   input:disabled + .glissiere { opacity: .4; cursor: default; }
-  select { background: #2a2c3a; color: var(--texte); border: 1px solid #3a3d4e; border-radius: 8px; padding: 5px 8px;
-           font: 12px "Segoe UI", sans-serif; cursor: pointer; }
-  #ouvrir { width: 100%; margin-top: 10px; padding: 9px; border: 1px solid #3a3d4e; border-radius: 10px;
-            background: transparent; color: var(--texte); font: 13px "Segoe UI", sans-serif; cursor: pointer; }
-  #ouvrir:hover { background: #232533; }
-  #ouvrir:disabled { opacity: .5; cursor: default; }
-  .raccourcis { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 12px; color: var(--gris); font-size: 11px; }
-  kbd { font: 600 10px "Segoe UI", sans-serif; background: #2a2c3a; border: 1px solid #3a3d4e; border-radius: 4px;
-        padding: 1px 5px; color: var(--texte); }
+  /* Menu : creusé. */
+  select { background: var(--fond); color: var(--texte); border: 0; border-radius: 10px; padding: 7px 10px;
+           font: 12px "Segoe UI", sans-serif; cursor: pointer; box-shadow: var(--creux); outline: none; }
+  select option { background: var(--fond); color: var(--texte); }
+  /* Bouton : en relief, il remonte un peu au survol et s'enfonce quand on appuie. */
+  #ouvrir { width: 100%; margin-top: 16px; padding: 11px; border: 0; border-radius: 14px; background: var(--fond);
+            color: var(--accent); font: 600 13px "Segoe UI", sans-serif; cursor: pointer; box-shadow: var(--relief);
+            transition: box-shadow .2s, transform .2s, color .2s; }
+  #ouvrir:hover { transform: translateY(-1px); color: var(--accent-survol); }
+  #ouvrir:active { box-shadow: var(--creux); transform: translateY(1px); }
+  #ouvrir:disabled { opacity: .5; cursor: default; transform: none; }
+  .raccourcis { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 16px; color: var(--gris); font-size: 11px; }
+  kbd { font: 600 10px "Segoe UI", sans-serif; background: var(--fond); border-radius: 5px; padding: 2px 6px;
+        color: var(--texte); box-shadow: var(--relief-leger); }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>

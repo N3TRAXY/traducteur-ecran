@@ -14,7 +14,7 @@ sur internet.
    fois, ensuite tout marche hors ligne.
 
 Le programme se met à jour tout seul : quand une nouvelle version sort, il propose « Mettre à jour ».
-Tous les raccourcis clavier se changent dans la rubrique « Options ».
+Tous les raccourcis clavier se changent dans la rubrique « Plus ».
 
 ## Ce qu'il sait faire
 
@@ -27,8 +27,9 @@ Tous les raccourcis clavier se changent dans la rubrique « Options ».
 - Grands modèles de traduction (bien meilleurs) pour l'anglais, l'espagnol, le portugais, l'italien, le russe,
   l'ukrainien, le polonais et le chinois ; avec la carte graphique, **MADLAD-400 3B** pour toutes les langues sauf
   l'anglais (japonais, coréen…).
-- **IA locale** en option (Ollama + TranslateGemma 4B) : retraduit les phrases avec leur sens et leurs expressions.
-- « Options » → **Signaler un problème** : une page de ce dépôt préremplie, avec le journal à joindre.
+- **IA locale** en option (TranslateGemma 4B, intégrée : rien à installer) : retraduit les phrases avec leur sens et
+  leurs expressions. Il faut une carte graphique (NVIDIA, AMD ou Intel) avec 4 Go.
+- « Plus » → **Signaler un problème** : une page de ce dépôt préremplie, avec le journal à joindre.
 
 ## Pour les développeurs
 
@@ -44,7 +45,8 @@ Traduction par [Argos Translate](https://github.com/argosopentech/argos-translat
 CTranslate2 et publiés dans la version [« modeles »](../../releases/tag/modeles) : opus-mt-tc-big-en-fr,
 opus-mt-tc-big-itc-itc, opus-mt-tc-big-zle-fr, opus-mt-tc-big-zlw-en, opus-mt-tc-bible-big-zhx-en ; MADLAD-400 3B
 (Google, Apache 2.0, converti par Nextcloud, téléchargé depuis Hugging Face) ; IA locale : TranslateGemma 4B (Google,
-conditions d'utilisation de Gemma), téléchargée par Ollama. Carte graphique : bibliothèque cuBLAS de NVIDIA, téléchargée depuis PyPI (paquet `nvidia-cublas-cu12`
+conditions d'utilisation de Gemma), au format GGUF (copie de mradermacher sur Hugging Face), qui tourne dans
+[llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT, version Vulkan téléchargée depuis ses versions GitHub). Carte graphique : bibliothèque cuBLAS de NVIDIA, téléchargée depuis PyPI (paquet `nvidia-cublas-cu12`
 publié par NVIDIA), seulement sur les PC qui ont une carte NVIDIA.
 
 L'extension pour les boutiques des navigateurs : voir [`boutiques/`](boutiques/ETAPES.md).

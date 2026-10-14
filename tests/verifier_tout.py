@@ -10,11 +10,15 @@ import importlib.machinery
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
+import urllib.error
+from dataclasses import replace
 
 sys.dont_write_bytecode = True  # pas de dossier __pycache__ dans le projet
 sys.stdout.reconfigure(errors="replace")  # une console sans japonais n'arrête pas les vérifications
@@ -54,6 +58,128 @@ verifier(te.developper_argot("Waffffie soooo cute") == "Waffffie so cute", "lett
 verifier(te.touches_du_raccourci("ctrl+alt+t") == (3, 0x54) and te.touches_du_raccourci("t") is None
          and te.touches_du_raccourci("print screen") == (0, 0x2C) and te.touches_du_raccourci("f8") == (0, 0x77),
          "raccourci clavier lu pour Windows (une touche seule : seulement si elle n'écrit rien)")
+# Bug : Spotify traduisait titres, artistes et playlists (« THE FINALS » -> « LES FINALES »). Seuls ses boutons et
+# textes le sont ; ailleurs (navigateur), liens et lignes de tableau restent traduits.
+lecteur_essai = te.Lecteur()
+U = lecteur_essai.UIA
+zones_spotify = [lecteur_essai._zone_ignoree("spotify.exe", t, loc) for t, loc in (
+    (U.UIA_HyperlinkControlTypeId, "lien"), (U.UIA_DataItemControlTypeId, "ligne"),
+    (U.UIA_TreeItemControlTypeId, "Élément de l'arborescence"), (U.UIA_TextControlTypeId, "titre"),
+    (U.UIA_ButtonControlTypeId, "Bouton"), (U.UIA_TextControlTypeId, "Texte"))]
+verifier(zones_spotify == [True, True, True, True, False, False]
+         and not lecteur_essai._zone_ignoree("opera.exe", U.UIA_HyperlinkControlTypeId, "lien")
+         and not lecteur_essai._zone_ignoree("opera.exe", U.UIA_DataItemControlTypeId, "ligne"),
+         "Spotify : titres et noms jamais traduits, ses boutons oui", zones_spotify)
+# La fenêtre des réglages se construit (4 rubriques) : un oubli dans son code arrêtait le programme au lancement.
+class FauxApp:
+    def __init__(self):
+        self.config = dict(te.CONFIG_DEFAUT, langues=["en"])
+        self.actif, self.historique, self.etat_carte = True, [], "Active"
+        self.etat_grand_modele, self.etat_ia, self.niveau_qualite = "Actif", "Active", "maximale"
+        self.progression_installation, self.erreur_installation = None, ""
+        self.traducteur = types.SimpleNamespace(langues_vues={})
+        self._extension_affichee = set()
+
+    def __getattr__(self, nom):  # (les actions des boutons : rien à faire ici)
+        return lambda *a, **k: {"en"} if nom == "langues_choisies" else set() if nom == "navigateurs_extension" else None
+
+    def _nom_raccourci(self, action):
+        return "+".join(te.noms_des_touches(self.config[te.RACCOURCIS[action][0]]))
+
+
+# Neumorphisme : en relief, la lumière en haut à gauche et l'ombre en bas à droite (l'ombre ne cache pas la lumière) ;
+# creusé, l'inverse, à l'intérieur.
+relief_essai = te.image_relief(120, 80, 14, False, False, 11, 3, 4).convert("L")
+creux_essai = te.image_relief(120, 80, 14, True, False, 11, 3, 4).convert("L")
+fond_essai = te.Image.new("L", (1, 1), te.FOND[0]).getpixel((0, 0))
+mesures_relief = [relief_essai.getpixel((60, 8)), fond_essai, relief_essai.getpixel((60, 72)),
+                  creux_essai.getpixel((60, 13)), creux_essai.getpixel((60, 66))]  # (milieux des bords)
+verifier(mesures_relief[0] > fond_essai > mesures_relief[2] and mesures_relief[3] < fond_essai < mesures_relief[4],
+         "neumorphisme : lumière et ombre du bon côté", mesures_relief)
+racine_essai = te.ctk.CTk()
+racine_essai.withdraw()
+fenetre_essai = te.Reglages(racine_essai, FauxApp())
+verifier(list(fenetre_essai.onglets.pages) == ["Accueil", "Langues", "Apparence", "Plus"]
+         and fenetre_essai.qualite.get() == "Maximale (IA)"
+         and fenetre_essai.tuiles_raccourcis["zone"].cget("text") == "Ctrl+Alt+Z",
+         "fenêtre des réglages : 4 rubriques, qualité et raccourcis affichés", list(fenetre_essai.onglets.pages))
+# Animations : un relief passe d'un état à l'autre en fondu et finit bien sur le nouvel état ; couleurs mêlées.
+racine_essai.geometry("+-4000+-4000")  # (affichée hors de l'écran : il faut une vraie taille pour dessiner)
+racine_essai.deiconify()
+relief_anime = te.Relief(fenetre_essai.onglets.tab("Accueil"))
+relief_anime.pack(fill="x")
+te.ctk.CTkLabel(relief_anime.dedans, text="essai").pack()
+racine_essai.update()
+relief_anime.redessiner()
+relief_anime.changer("creux")
+fin_animation = time.monotonic() + 2
+while relief_anime._animation and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+attendues = relief_anime._images_de("creux", 1.0)
+# La pastille des choix glisse jusqu'au nouveau choix.
+choix_essai = te.ChoixRelief(fenetre_essai.onglets.tab("Accueil"), ["A", "B", "C"], te.ctk.StringVar(value="A"),
+                             lambda v: None)
+choix_essai.pack(fill="x")
+racine_essai.update()
+choix_essai.variable.set("C")
+fin_animation = time.monotonic() + 2
+while choix_essai._glissement and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+interrupteur_essai = te.InterrupteurRelief(fenetre_essai.onglets.tab("Accueil"))
+interrupteur_essai.pack()
+racine_essai.update()
+interrupteur_essai.select()
+fin_animation = time.monotonic() + 2
+while interrupteur_essai._animation and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+verifier(interrupteur_essai.get() == 1 and interrupteur_essai._animation is None and interrupteur_essai.avance == 1.0,
+         "interrupteur : il glisse jusqu'au bout et reste allumé", interrupteur_essai.avance)
+carte_page = fenetre_essai.onglets.carte
+racine_essai.update()
+avant_glissement = (carte_page.winfo_x(), carte_page.winfo_y(), racine_essai.winfo_width())
+fenetre_essai.onglets.set("Plus")
+pendant_glissement = carte_page.winfo_manager()
+fin_animation = time.monotonic() + 2
+while fenetre_essai.onglets._glissement and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+racine_essai.update()
+apres_glissement = (carte_page.winfo_x(), carte_page.winfo_y(), racine_essai.winfo_width())  # (la hauteur suit
+# les éléments d'essai ajoutés plus haut dans l'accueil)
+verifier(pendant_glissement == "pack" and carte_page.winfo_manager() == "pack" and apres_glissement == avant_glissement
+         and not fenetre_essai.onglets._vue,
+         "rubrique : la photo de la carte glisse, la vraie carte ne bouge pas et réapparaît",
+         (pendant_glissement, avant_glissement, apres_glissement))
+verifier(choix_essai._glissement is None and abs(choix_essai.position - 2 * choix_essai._case()) < 1,
+         "choix : la pastille glisse jusqu'au nouveau choix", (choix_essai.position, choix_essai._case()))
+verifier(relief_anime._animation is None and attendues is not None
+         and list(relief_anime._images[0].getdata()) == list(attendues[0].getdata())
+         and te.melanger_couleurs("#000000", "#FFFFFF", 0.5) == "#808080",
+         "animations : fondu jusqu'au nouvel état, couleurs mêlées", relief_anime.etat)
+racine_essai.destroy()
+# La qualité en un seul choix allume ou coupe chaque moyen (carte graphique, grand modèle, IA).
+appels_qualite = []
+app_qualite = types.SimpleNamespace(config={"carte_graphique": False, "grand_modele": False, "ia_locale": False},
+                                   reglages=types.SimpleNamespace(afficher_carte=lambda: None))
+for cle, nom in (("carte_graphique", "choisir_carte_graphique"), ("grand_modele", "choisir_grand_modele"),
+                 ("ia_locale", "choisir_ia")):
+    setattr(app_qualite, nom, lambda actif, cle=cle: (appels_qualite.append((cle, actif)),
+                                                      app_qualite.config.__setitem__(cle, actif)))
+niveaux_vus = []
+for niveau in ("maximale", "meilleure", "normale"):
+    te.Application.choisir_qualite(app_qualite, niveau)
+    niveaux_vus.append(te.Application.niveau_qualite.fget(app_qualite))
+verifier(niveaux_vus == ["maximale", "meilleure", "normale"] and appels_qualite == [
+    ("carte_graphique", True), ("grand_modele", True), ("ia_locale", True), ("ia_locale", False),
+    ("carte_graphique", False), ("grand_modele", False)], "qualité en un seul choix", (niveaux_vus, appels_qualite))
+# Bug : sur un clavier français (AZERTY), Ctrl+Alt+Z devenait Ctrl+Alt+W (la zone choisie ne marchait pas).
+verifier(te.touches_du_raccourci("ctrl+alt+z") == (3, 0x5A) and te.touches_du_raccourci("ctrl+alt+a") == (3, 0x41)
+         and te.touches_du_raccourci("ctrl+shift+2") == (6, 0x32),
+         "raccourci : la lettre écrite, quel que soit le clavier (AZERTY)",
+         [te.touches_du_raccourci(c) for c in ("ctrl+alt+z", "ctrl+alt+a", "ctrl+shift+2")])
 verifier(te.noms_des_touches("ctrl+alt+enter") == ["Ctrl", "Alt", "Entrée"] and te.noms_des_touches("print screen")
          == ["Impr. écran"] and te.noms_des_touches("left windows+shift+s") == ["Win", "Maj", "S"]
          and te.noms_des_touches("") == ["Aucun"], "raccourcis dessinés avec les noms français des touches")
@@ -373,22 +499,36 @@ te.madlad_present = sauve_present
 verifier(chemins_madlad == ([("ja", "fr")], [("en", "fr")]) and madlad_recus[0][:1] == ["<2fr>"]
          and madlad_recus[0][-1] == "</s>" and sortie_madlad == ["Tu veux jouer ?"] and sans_carte == [("ja", "en"), ("en", "fr")],
          "grand modèle : direct sauf l'anglais, « <2fr> » en tête, rien sans la carte graphique", (chemins_madlad, madlad_recus))
-# IA locale (Ollama) : seulement les phrases ; ses traductions remplacent les premières ; un nombre changé est refusé ;
-# la couper remet les traductions habituelles.
+# IA locale (moteur intégré) : seulement les phrases ; ses traductions remplacent les premières ; un nombre changé est
+# refusé ; un texte refusé par le moteur garde sa traduction ; la couper remet les traductions habituelles.
 essai_ia_trad = te.Traducteur.__new__(te.Traducteur)
 essai_ia_trad.verrou, essai_ia_trad.mots, essai_ia_trad.generation = threading.RLock(), te.MesMots(), 0
 essai_ia_trad.cache = {("Break a leg at your show tomorrow!", "fr"): "Cassez une jambe à votre spectacle demain !",
                        ("I have 3 cats at home now.", "fr"): "J'ai 3 chats à la maison maintenant.",
-                       ("Open Project", "fr"): "Ouvrir le projet"}
+                       ("Open Project", "fr"): "Ouvrir le projet",
+                       ("This text is far too long for the engine.", "fr"): "Ce texte est bien trop long pour le moteur."}
 essai_ia_trad.cache_modifie = False
+essai_ia_trad.de_ia = set()
 essai_ia_trad._langue = lambda texte, cible: "en"
 reponses_ia = {"Break a leg at your show tomorrow!": "Bonne chance pour ton spectacle demain !",
                "I have 3 cats at home now.": "J'ai 4 chats à la maison."}
-sauve_ollama = te.ollama
-te.ollama = lambda chemin, corps=None, delai=120: {"message": {"content": next(
-    v for k, v in reponses_ia.items() if k in corps["messages"][0]["content"])}}
+invites_ia = []
+
+
+class FauxMoteur:
+    def completer(self, invite, longueur):
+        invites_ia.append(invite)
+        if "far too long" in invite:
+            raise urllib.error.HTTPError("http://127.0.0.1", 400, "trop long", {}, None)
+        return next(v for k, v in reponses_ia.items() if k in invite)
+
+    def en_veille(self):
+        pass
+
+
 pretes = []
 ia = te.IALocale(essai_ia_trad, lambda: pretes.append(1))
+ia.moteur = FauxMoteur()
 ia.actif = True
 ia.proposer(list(k for k, _ in essai_ia_trad.cache), "fr")
 proposes = [t for t, _ in ia.file]
@@ -403,18 +543,200 @@ apres_ia = dict(essai_ia_trad.cache)
 ia.oublier()
 arret_ia.set()
 ia.reveil.set()
-te.ollama = sauve_ollama
 verifier("Open Project" not in proposes
          and apres_ia[("Break a leg at your show tomorrow!", "fr")].replace("\xa0", " ") == "Bonne chance pour ton spectacle demain !"
          and apres_ia[("I have 3 cats at home now.", "fr")] == "J'ai 3 chats à la maison maintenant."
-         and ("Break a leg at your show tomorrow!", "fr") not in essai_ia_trad.cache and pretes,
-         "IA locale : phrases seulement, traduction remplacée, nombre changé refusé, coupée : traductions habituelles",
-         (proposes, apres_ia))
+         and apres_ia[("This text is far too long for the engine.", "fr")] == "Ce texte est bien trop long pour le moteur."
+         and ("Break a leg at your show tomorrow!", "fr") not in essai_ia_trad.cache and pretes
+         and invites_ia and all(i.startswith("<start_of_turn>user\nYou are a professional English (en) to French (fr)")
+                                and i.endswith("<end_of_turn>\n<start_of_turn>model\n") for i in invites_ia),
+         "IA locale : phrases seulement, traduction remplacée, nombre changé et texte refusé gardés, consigne de "
+         "TranslateGemma, coupée : traductions habituelles", (proposes, apres_ia, invites_ia[:1]))
+# La carte graphique de l'IA : une vraie carte avec assez de mémoire (pas la puce graphique du processeur), la plus
+# grande ; aucune sinon.
+liste_cartes = ("ggml_vulkan: Found 2 Vulkan devices:\n"
+                "ggml_vulkan: 0 = Intel(R) UHD Graphics 770 (Intel Corporation) | uma: 1 | fp16: 1 | warp size: 32\n"
+                "ggml_vulkan: 1 = AMD Radeon RX 7800 XT (AMD proprietary driver) | uma: 0 | fp16: 1 | warp size: 64\n"
+                "Available devices:\n  Vulkan0: Intel(R) UHD Graphics 770 (16263 MiB, 15800 MiB free)\n"
+                "  Vulkan1: AMD Radeon RX 7800 XT (16368 MiB, 15900 MiB free)\n")
+petite_carte = ("ggml_vulkan: 0 = NVIDIA GeForce GTX 1050 (NVIDIA) | uma: 0 | fp16: 0\n"
+                "Available devices:\n  Vulkan0: NVIDIA GeForce GTX 1050 (2048 MiB, 1900 MiB free)\n")
+verifier(te.choisir_carte_ia(liste_cartes) == ("Vulkan1", "AMD Radeon RX 7800 XT")
+         and te.choisir_carte_ia(petite_carte) is None and te.choisir_carte_ia("Available devices:\n") is None,
+         "IA locale : vraie carte graphique avec 4 Go, jamais la puce du processeur",
+         (te.choisir_carte_ia(liste_cartes), te.choisir_carte_ia(petite_carte)))
+# Bug corrigé : le moteur qui démarre n'est pas « sans travail depuis 15 min » (en_veille l'arrêtait aussitôt prêt).
+moteur_essai = te.MoteurIA()
+moteur_essai.carte = ("Vulkan0", "essai")
+inactif_au_demarrage = []
+
+
+class FauxProcessus:
+    pid, returncode, _handle = 1, None, 0
+
+    def poll(self):
+        return None
+
+
+class FausseSante:
+    """Réponse « /health » : note si le moteur passait pour inactif pendant son démarrage."""
+
+    def __enter__(self):
+        inactif_au_demarrage.append(time.monotonic() - moteur_essai.servi_le > te.VEILLE_IA)
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+sauve_popen, sauve_lier, sauve_dossier = te.subprocess.Popen, te.lier_au_programme, te.DOSSIER_IA
+te.subprocess.Popen = lambda *a, **k: FauxProcessus()
+te.lier_au_programme = lambda processus: None
+te.DOSSIER_IA = tempfile.mkdtemp()
+moteur_essai.ouvreur = types.SimpleNamespace(open=lambda *a, **k: FausseSante())
+try:
+    moteur_essai.demarrer()
+finally:
+    te.subprocess.Popen, te.lier_au_programme = sauve_popen, sauve_lier
+    shutil.rmtree(te.DOSSIER_IA, ignore_errors=True)
+    te.DOSSIER_IA = sauve_dossier
+moteur_essai.en_veille()
+verifier(inactif_au_demarrage == [False] and moteur_essai.processus is not None,
+         "IA locale : le moteur qui démarre n'est pas arrêté par la veille", inactif_au_demarrage)
+moteur_essai.processus = None
+# Ce que dit l'interrupteur de l'IA : pas de carte (même coupée), coupée, à télécharger, démarrage, active.
+etat_app = types.SimpleNamespace(config={"ia_locale": False}, ia=types.SimpleNamespace(etat="", moteur=te.MoteurIA()))
+sauve_presente = te.ia_presente
+etats_ia = []
+for carte, actif, presente, etat in ((False, True, True, ""), (None, False, False, ""), (None, True, False, ""),
+                                     (("Vulkan0", "RTX"), True, True, ""), (("Vulkan0", "RTX"), True, True, "Active")):
+    etat_app.ia.moteur.carte, etat_app.config["ia_locale"], etat_app.ia.etat = carte, actif, etat
+    te.ia_presente = lambda presente=presente: presente
+    etats_ia.append(te.Application.etat_ia.fget(etat_app))
+te.ia_presente = sauve_presente
+verifier(etats_ia == ["Pas de carte graphique adaptée sur ce PC", "Désactivé", "téléchargement de 2,4 Go au premier usage",
+                      "démarrage…", "Active"], "IA locale : état affiché sous l'interrupteur", etats_ia)
+
+# Bug (VRChat Creator Companion) : le même texte lu tantôt par l'accessibilité, tantôt par l'image (cadres décalés de
+# quelques pixels) faisait reposer sa traduction à chaque relecture : elle clignotait. La vitre reste.
+calque_clignote = te.Calque.__new__(te.Calque)
+calque_clignote.visible, calque_clignote.generation, calque_clignote.fondu = True, 0, False
+calque_clignote.affiches, calque_clignote.dispositions, vitres_rendues = {}, {}, []
+calque_clignote._vitre = lambda: types.SimpleNamespace(montrer=lambda *a, **k: None)
+calque_clignote._rendre = vitres_rendues.append
+par_accessibilite = te.Texte("Logs", 319, 763, 35, 22, "morceau", (0, 0, 2000, 2000), "creatorcompanion.exe")
+par_image = te.Texte("Logs", 324, 760, 36, 23, "morceau", (0, 0, 2000, 2000), "creatorcompanion.exe")
+disposition_a = ((("Journaux",),), 15, 315, 759, 70, 30, (30, 30, 30), (230, 230, 230), False, 100, False)
+disposition_b = ((("Journaux",),), 15, 320, 756, 70, 31, (32, 31, 30), (228, 230, 231), False, 100, False)
+calque_clignote.mettre_a_jour([(par_accessibilite, disposition_a, None)])
+vitre_avant = calque_clignote.affiches[par_accessibilite]
+calque_clignote.mettre_a_jour([(par_image, disposition_b, None)])
+verifier(calque_clignote.affiches.get(par_image) is vitre_avant and not vitres_rendues
+         and calque_clignote.dispositions[par_image] == disposition_a,
+         "traduction relue à quelques pixels près : la même vitre reste (plus de clignotement)", vitres_rendues)
+# Lecture de l'image : une zone identique à la même place n'est pas relue (curseur qui clignote…) ; changée, si.
+lecteur_memoire = te.LecteurImage.__new__(te.LecteurImage)
+lecteur_memoire.memoire, lecteur_memoire.evitees, lectures_faites = collections.OrderedDict(), 0, []
+lecteur_memoire.lire = lambda pixels, origine, zone: lectures_faites.append(zone) or ["lu"]
+image_memoire = np.zeros((100, 200, 4), np.uint8)
+premiere_lecture = lecteur_memoire.lire_memoire(image_memoire, (0, 0), (0, 0, 200, 50))
+lecteur_memoire.lire_memoire(image_memoire, (0, 0), (0, 0, 200, 50))
+image_memoire[10, 10] = 255
+lecteur_memoire.lire_memoire(image_memoire, (0, 0), (0, 0, 200, 50))
+verifier(premiere_lecture == ["lu"] and len(lectures_faites) == 2 and lecteur_memoire.evitees == 1,
+         "lecture de l'image : zone identique pas relue, zone changée relue", (lectures_faites, lecteur_memoire.evitees))
+# Bugs trouvés à la relecture (2026-10-14) :
+# 1. un « [ » dans le texte coupait toute protection (nombres changés, texte abandonné) : les crochets sont protégés ;
+# 2. un nombre collé à du japonais protégeait toute la phrase (elle revenait sans être traduite) ;
+# 6. « Loading.......... » passait pour une erreur du modèle.
+crochets_proteges = te.proteger_code("[Info] Meet me at 4 PM tomorrow", None, True)
+japonais_protege = te.proteger_code("明日の午後4時に駅で会いましょう", None, True)
+verifier(crochets_proteges == ("[A] Meet me at [B] PM tomorrow", ["[Info]", "4"])
+         and te.remettre_code("[A] Rendez-vous à [B] PM demain", crochets_proteges[1]) == "[Info] Rendez-vous à 4 PM demain"
+         and japonais_protege == ("明日の午後[A]時に駅で会いましょう", ["4"])
+         and not te.traduction_aberrante("Chargement..........", "Loading..........")
+         and te.traduction_aberrante("??????????????", "Why?"),
+         "protection : crochets et nombres (même en japonais), répétitions du texte d'origine acceptées",
+         (crochets_proteges, japonais_protege))
+# 3. l'IA perdait le guillemet final et collait les lignes d'un paragraphe ; des guillemets autour de toute sa
+# réponse sont retirés.
+ia_verif = te.IALocale.__new__(te.IALocale)
+ia_verif.traducteur = types.SimpleNamespace(_en_capitales=lambda texte: False)
+verifies = [ia_verif._verifier('He said "hello"', 'Il a dit "bonjour"', "fr"),
+            ia_verif._verifier("Line one is here now\nLine two is here now", "Ligne un est ici\nLigne deux est ici", "fr"),
+            ia_verif._verifier("Please click the button below", '"Cliquez sur le bouton ci-dessous"', "fr")]
+verifier(verifies == ['Il a dit "bonjour"', "Ligne un est ici\nLigne deux est ici", "Cliquez sur le bouton ci-dessous"],
+         "IA : guillemets et lignes gardés", verifies)
+# 4. couper l'IA après un redémarrage laissait ses traductions : elles sont gardées sur le disque avec la marque IA.
+avant_ia = te.Traducteur.__new__(te.Traducteur)
+avant_ia.verrou, avant_ia.cache_modifie = threading.RLock(), True
+avant_ia.cache = {("Click the button below now", "fr"): "TRADUCTION DE L'IA", ("Hello there", "fr"): "Bonjour"}
+avant_ia.de_ia = {("Click the button below now", "fr")}
+avant_ia.sauver()
+apres_ia = te.Traducteur.__new__(te.Traducteur)
+apres_ia.verrou, apres_ia.cache, apres_ia.de_ia, apres_ia.generation = threading.RLock(), {}, set(), 0
+apres_ia._charger_cache()
+te.IALocale(apres_ia, lambda: None).oublier()
+verifier(("Click the button below now", "fr") not in apres_ia.cache and apres_ia.cache.get(("Hello there", "fr")) == "Bonjour",
+         "IA coupée après un redémarrage : ses traductions sont retirées, pas les autres", apres_ia.cache)
+# 5. une traduction de l'IA faite pendant un changement de « Mes mots » n'est pas gardée (anciennes règles).
+regles_trad = te.Traducteur.__new__(te.Traducteur)
+regles_trad.verrou, regles_trad.mots, regles_trad.generation = threading.RLock(), te.MesMots(), 0
+regles_trad.cache, regles_trad.de_ia, regles_trad.cache_modifie = {("Click the button below to go on", "fr"): "Cliquez"}, set(), False
+regles_trad._langue = lambda texte, cible: "en"
+
+
+class MoteurPendantChangement:
+    def completer(self, invite, longueur):
+        regles_trad.changer_mots(["button = bouton-perso"])  # (pendant que l'IA travaille)
+        regles_trad.cache[("Click the button below to go on", "fr")] = "Cliquez sur le bouton-perso"
+        return "Cliquez sur le bouton ci-dessous pour continuer"
+
+    def en_veille(self):
+        pass
+
+
+ia_regles = te.IALocale(regles_trad, lambda: None)
+ia_regles.moteur, ia_regles.actif = MoteurPendantChangement(), True
+ia_regles.proposer(["Click the button below to go on"], "fr")
+arret_regles = threading.Event()
+threading.Thread(target=ia_regles.boucle, args=(arret_regles,), daemon=True).start()
+for _ in range(100):
+    if not ia_regles.file:
+        break
+    time.sleep(0.02)
+time.sleep(0.2)
+arret_regles.set()
+ia_regles.reveil.set()
+verifier(regles_trad.cache.get(("Click the button below to go on", "fr")) == "Cliquez sur le bouton-perso",
+         "IA : un lot traduit pendant un changement de « Mes mots » n'est pas gardé", regles_trad.cache)
 
 # --------------------------------------------------------------------------- avec les vrais modèles
 print("Traductions (vrais modèles)")
 installees = te.langues_installees("fr")
 traducteur = te.Traducteur(installees)
+# Bugs du site VRChat (2026-10-14) : « Logout » pris pour un pseudo, « Description » devenu « Désignation des
+# marchandises », libellés en mots anglais qui existent aussi en français (« World Info », « Public Link ») gardés en
+# anglais, « Help Desk » et « World Store » recopiés tels quels par le modèle.
+libelles_vrchat = ["Logout", "Description", "World Info", "Public Link", "Help Desk", "World Store", "Favorite Avatars",
+                   "Invite Me"]
+traduits_vrchat = traducteur.traduire(libelles_vrchat, "fr", filtre=te.texte_de_page_a_traduire)
+verifier(traduits_vrchat[0] == "Déconnexion" and traduits_vrchat[1] in (None, "Description")
+         and all(traduits_vrchat[2:]),
+         "site VRChat : boutons courts traduits, « Description » reste « Description »",
+         list(zip(libelles_vrchat, traduits_vrchat)))
+# Bugs trouvés à la relecture : un texte avec des crochets est traduit, ses nombres gardés ; ce qu'on écrit garde son
+# heure ; une erreur passagère (carte graphique pleine) ne rend pas une paire de langues impossible.
+avec_crochets = traducteur.traduire(["[Info] Meet me at 4 PM tomorrow"], "fr")[0]
+ecrit = traducteur.traduire_ecrit("On se voit à 21h demain [ok]", "fr", "en") if ("fr", "en") in te.paires_installees() else "21"
+sauve_lot = traducteur._traduire_avec_reperes
+traducteur._traduire_avec_reperes = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("CUDA out of memory"))
+traducteur._traduire(["A brand new sentence to translate now"], "fr")
+traducteur._traduire_avec_reperes = sauve_lot
+passagere = ("en", "fr") not in traducteur.paires_impossibles and ("en", "fr") in traducteur.echecs
+traducteur.echecs.clear()
+verifier(avec_crochets and "[Info]" in avec_crochets and "4" in avec_crochets and ecrit and "21" in ecrit and passagere,
+         "crochets et nombres gardés, erreur passagère réessayée", (avec_crochets, ecrit, passagere))
 traducteur.prechauffer("fr")
 verifier(("en", "fr") in traducteur.modeles, "modèles anglais → français préchargés à l'activation")
 CAS = [
@@ -526,6 +848,9 @@ lecteur_vide = types.SimpleNamespace(vus=[], a_relire=set(), vus_hors=lambda h: 
                                      _est_pseudo=lambda *a: False)
 app_bout = types.SimpleNamespace(textes_image=list(suivi_bout.morceaux), memoire_fusion={}, suivi=suivi_bout)
 textes_bout = te.Application._fusionner(app_bout, lecteur_vide)
+# (La fenêtre de chaque texte est demandée au vrai écran : une fenêtre ouverte là, comme celle des réglages en haut à
+# gauche, faisait échouer l'essai. La fausse fenêtre est toute l'image.)
+textes_bout = [replace(t, fenetre=(0, 0, 900, 260)) for t in textes_bout]
 traducteur.traduire([t.texte for t in textes_bout], "fr")
 calque_essai = te.Calque.__new__(te.Calque)
 calque_essai.style, calque_essai.facteur_taille = "auto", 1.0
@@ -571,7 +896,7 @@ def demande(methode, chemin, corps=None, entetes=None):
 EXT = {"X-Traducteur-Ecran": "1", "Content-Type": "application/json"}
 code, corps = demande("GET", "/etat", entetes=EXT)
 etat = json.loads(corps) if code == 200 else {}
-verifier(code == 200 and {"actif", "langue", "version", "extension"} <= set(etat), "/etat complet", corps)
+verifier(code == 200 and {"actif", "langue", "version", "extension", "theme"} <= set(etat), "/etat complet", corps)
 verifier(demande("GET", "/etat")[0] == 403, "sans l'en-tête de l'extension : refusé")
 verifier(demande("GET", "/etat", entetes={**EXT, "Host": "site.com"})[0] == 403, "autre adresse : refusé")
 verifier(demande("OPTIONS", "/traduire", entetes={"Origin": "https://site.com"})[0] == 501, "page web : refusée")

@@ -13,6 +13,7 @@ bouts de code et le texte des images et vidéos sont laissés tels quels.
 import asyncio
 import bisect
 import collections
+import functools
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 import ctypes
@@ -31,6 +32,8 @@ os.environ.setdefault("KMP_BLOCKTIME", "0")
 
 import queue
 import re
+import secrets
+import socket
 import subprocess
 import sys
 import tempfile
@@ -43,6 +46,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from tkinter import filedialog
 import winreg
 from ctypes import wintypes
@@ -60,7 +64,7 @@ import pystray
 import sentencepiece
 from py3langid.langid import MODEL_FILE as MODELE_LANGID
 from py3langid.langid import LanguageIdentifier
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageGrab, ImageTk
 from winrt.windows.globalization import Language as LangueWindows
 from winrt.windows.graphics.imaging import BitmapPixelFormat, SoftwareBitmap
 from winrt.windows.media.ocr import OcrEngine
@@ -112,7 +116,7 @@ MADLAD = {"depot": "Nextcloud-AI/madlad400-3b-mt-ct2-int8", "dossier": "madlad",
 DOSSIER_GPU = os.path.join(APP_DIR, "carte_graphique")
 FICHIERS_GPU = ("cublas64_12.dll", "cublasLt64_12.dll")
 CUBLAS = ("nvidia-cublas-cu12", "12.9.2.10")  # (paquet publié par NVIDIA sur PyPI ; version figée, vérifiée)
-VERSION_PROGRAMME = "2.2.0"
+VERSION_PROGRAMME = "2.3.0"
 # Dépôt GitHub (« compte/dépôt ») où sont publiées les versions (mises à jour) et les grands modèles. Vide :
 # ni mise à jour automatique, ni grand modèle téléchargé (celui-ci peut alors être livré à côté du programme).
 DEPOT_GITHUB = "N3TRAXY/traducteur-ecran"
@@ -165,6 +169,10 @@ STYLES = {
 NOMS_STYLES = {"auto": "Auto", "clair": "Clair", "sombre": "Sombre"}
 # Taille du texte des traductions : nom affiché, et facteur par rapport au texte d'origine.
 TAILLES = {"petite": ("Petite", 0.88), "normale": ("Normale", 1.0), "grande": ("Grande", 1.15)}
+# Qualité des traductions, en un seul choix : normale (le processeur), meilleure (la carte graphique NVIDIA et le
+# grand modèle de traduction), maximale (les deux, et l'IA locale). Voir Application.choisir_qualite.
+THEMES = {"systeme": ("Système", "system"), "clair": ("Clair", "light"), "sombre": ("Sombre", "dark")}
+NIVEAUX_QUALITE = {"normale": "Normale", "meilleure": "Meilleure", "maximale": "Maximale (IA)"}
 # Réactivité : nom affiché, et secondes entre deux analyses de l'écran (juste après une action, au repos).
 REACTIVITES = {"econome": ("Économe", 0.3, 1.0), "normale": ("Normale", 0.1, 0.5), "rapide": ("Rapide", 0.05, 0.25)}
 # Combinaisons que tout le monde utilise déjà (copier, coller, fermer…) : refusées comme raccourci.
@@ -187,6 +195,7 @@ CONFIG_DEFAUT = {
     "taille": "normale",  # taille du texte des traductions (voir TAILLES)
     "opacite": 100,  # opacité des traductions, en %
     "fondu": True,  # les traductions apparaissent en douceur
+    "theme": "systeme",  # thème de la fenêtre et de l'extension : comme Windows, clair ou sombre
     "programmes": [],  # liste de programmes choisis (« steam.exe »…)
     "mode_programmes": "sauf",  # "sauf" : tout sauf la liste ; "seulement" : seulement la liste
     "reactivite": "normale",  # voir REACTIVITES
@@ -194,22 +203,19 @@ CONFIG_DEFAUT = {
     "mots": [],  # « Mes mots » : un mot jamais traduit, ou « mot = traduction imposée », par ligne
     "carte_graphique": True,  # traduire sur la carte graphique NVIDIA s'il y en a une (~10 fois plus vite)
     "grand_modele": True,  # grand modèle de traduction (MADLAD, 3 Go), avec la carte graphique seulement
-    "ia_locale": False,  # IA locale par Ollama : le sens et les expressions (il faut Ollama)
+    "ia_locale": False,  # IA locale (TranslateGemma) : le sens et les expressions (carte graphique, 2,4 Go)
 }
 # Raccourcis clavier, tous changeables (rubrique « Options ») : action -> (clé des réglages, par défaut, rôle).
 # Une combinaison vide : aucun raccourci pour cette action.
 RACCOURCIS = {
     "pause": ("raccourci", "ctrl+alt+t", "Marche / pause"),
     "ecrire": ("raccourci_ecrire", "ctrl+alt+enter", "Traduire ton message"),  # (pas Ctrl+Alt+E : AltGr+E, « € »)
-    # Ctrl+C : toute copie d'un texte traduit. (Pas « raccourci_copier » : une ancienne version y a laissé Ctrl+Alt+C.)
-    "copier": ("raccourci_copie", "ctrl+c", "Copier la traduction"),
     "zone": ("raccourci_zone", "ctrl+alt+z", "Traduire une zone choisie"),
     "capture": ("raccourci_capture", "print screen", "Capture d'écran"),
-    "capture_zone": ("raccourci_capture_zone", "windows+shift+s", "Capture d'une zone"),
 }
 CONFIG_DEFAUT.update({cle: defaut for cle, defaut, _ in RACCOURCIS.values()})
-IDS_RACCOURCIS = {"pause": 1, "ecrire": 2, "copier": 3, "zone": 4}  # raccourcis de Windows (RegisterHotKey)
-CAPTURES = ("capture", "capture_zone")  # touches seulement guettées : la capture est faite par Windows
+IDS_RACCOURCIS = {"pause": 1, "ecrire": 2, "zone": 4}  # raccourcis de Windows (RegisterHotKey)
+CAPTURES = ("capture",)  # touches seulement guettées : la capture est faite par Windows
 # Noms des touches sur les touches dessinées (« print screen » -> « Impr. écran »).
 NOMS_TOUCHES = {"ctrl": "Ctrl", "alt": "Alt", "alt gr": "AltGr", "shift": "Maj", "maj": "Maj", "windows": "Win",
                 "enter": "Entrée", "print screen": "Impr. écran", "space": "Espace", "esc": "Échap", "delete": "Suppr",
@@ -245,7 +251,9 @@ BLOC_IMAGE = 16  # côté (pixels) des blocs examinés pour repérer les photos 
 # Nombre de nouveaux textes traduits avant d'afficher un résultat partiel.
 TAILLE_PAQUET = 8
 
-ACCENT = "#6366F1"
+ACCENT = "#2563EB"  # bleu : boutons, interrupteurs, rubrique choisie
+ACCENT_SURVOL = "#1D4ED8"
+ACCENT_FONCE = "#1E40AF"
 
 # Constantes Win32
 GWL_EXSTYLE = -20
@@ -413,6 +421,11 @@ def touches_du_raccourci(combinaison):
             modificateurs |= 0x1 | 0x2
         elif any(m in nom for m in ("ctrl", "alt", "shift", "maj", "windows")):  # (« left ctrl »…)
             modificateurs |= (0x2 if "ctrl" in nom else 0x1 if "alt" in nom else 0x8 if "windows" in nom else 0x4)
+        elif touche is None and len(nom) == 1 and nom.isascii() and nom.isalnum():
+            # Une lettre ou un chiffre : son code est celui de la touche marquée ainsi, quel que soit le clavier.
+            # (Passer par le code physique donnait Ctrl+Alt+W pour Ctrl+Alt+Z sur un clavier français AZERTY : la
+            # zone choisie ne marchait pas.)
+            touche = ord(nom.upper())
         elif touche is None:
             try:
                 touche = user32.MapVirtualKeyW(keyboard.key_to_scan_codes(nom)[0], 1)  # MAPVK_VSC_TO_VK
@@ -438,7 +451,8 @@ def charger_config():
         if isinstance(donnees, dict):
             config.update(donnees)
             config.pop("traduire_navigateurs", None)  # (option retirée : sans l'extension, l'écran est lu)
-            config.pop("raccourci_copier", None)  # (réglage d'une ancienne version, plus utilisé)
+            for ancien in ("raccourci_copier", "raccourci_copie", "raccourci_capture_zone"):
+                config.pop(ancien, None)  # (raccourcis retirés : copier la traduction, capture d'une zone)
     except FileNotFoundError:
         pass
     except Exception:
@@ -703,20 +717,26 @@ MARQUE_CODE = "⁣"
 CODE_CITE = re.compile(r"`[^`\n]{1,100}`|⁣[^⁣\n]{1,300}⁣")
 
 
-NOMBRE_A_PROTEGER = re.compile(r"(?<![\w\[])[\w.:,/-]*\d[\w.:,/-]*")  # « 21h », « 2.0 », « 14:30 »
+# « 21h », « 2.0 », « 14:30 » ; pas les caractères chinois ou japonais collés au nombre (« 午後4時に会いましょう » :
+# toute la phrase passait pour un seul nombre, et revenait sans être traduite).
+_LETTRE_LATINE = "A-Za-zÀ-ÖØ-öø-ÿ0-9_"
+NOMBRE_A_PROTEGER = re.compile(rf"(?<![{_LETTRE_LATINE}\[])[{_LETTRE_LATINE}.:,/-]*\d[{_LETTRE_LATINE}.:,/-]*")
+# De vrais crochets dans le texte (« [Info] », « [edited] ») : protégés comme du code, pour ne pas se confondre avec
+# les repères (avant, un seul « [ » coupait toute protection : nombres changés, texte abandonné).
+CROCHETS = re.compile(r"\[[^\[\]\n]{0,40}\]")
 
 
 def proteger_code(texte, mots=None, chiffres=False):
     """(texte avec des repères à la place du code cité et des « Mes mots », ce qui revient à chaque repère).
     Un mot jamais traduit revient tel quel ; un mot à traduction imposée revient traduit comme demandé.
     `chiffres` : les nombres aussi (ce qu'on écrit : une heure ne doit pas être convertie)."""
-    if "[" in texte:  # de vrais crochets se confondraient avec les repères
-        return texte.replace(MARQUE_CODE, ""), []
     codes = []
 
     def reperer(valeur):
         codes.append(valeur)
         return "[%s]" % chr(ord("A") + len(codes) - 1)
+
+    texte = CROCHETS.sub(lambda m: reperer(m.group(0)) if len(codes) < 26 else m.group(0), texte)
 
     texte = CODE_CITE.sub(lambda m: reperer(m.group(0)) if len(codes) < 26 else m.group(0), texte)
     if mots and mots.motif:
@@ -726,6 +746,10 @@ def proteger_code(texte, mots=None, chiffres=False):
         texte = NOMBRE_A_PROTEGER.sub(lambda m: reperer(m.group(0)) if len(codes) < 26 else m.group(0), texte)
     # (Une marque restée seule — plus de 26 codes, code très long — ne part pas au modèle : il en ferait « ⁇ ».)
     return texte.replace(MARQUE_CODE, ""), codes
+
+
+class ModeleAbsent(RuntimeError):
+    """Aucun modèle de traduction pour ces langues (pas une erreur passagère)."""
 
 
 class MesMots:
@@ -841,7 +865,7 @@ GLOSSAIRE_INTERFACE_FR = {
     "add to cart": "Ajouter au panier", "add to wishlist": "Ajouter à la liste de souhaits", "buy now": "Acheter maintenant",
     "checkout": "Paiement", "sign in": "Se connecter", "log in": "Se connecter", "login": "Connexion",
     "sign up": "S'inscrire", "register": "S'inscrire", "log out": "Se déconnecter", "sign out": "Se déconnecter",
-    "logout": "Déconnexion", "followers": "Abonnés", "following": "Abonnements", "follow": "Suivre",
+    "logout": "Déconnexion", "description": "Description", "invite me": "M'inviter", "followers": "Abonnés", "following": "Abonnements", "follow": "Suivre",
     "unfollow": "Ne plus suivre", "subscribe": "S'abonner", "subscribed": "Abonné", "unsubscribe": "Se désabonner",
     "open": "Ouvrir", "open project": "Ouvrir le projet", "open file": "Ouvrir le fichier", "save": "Enregistrer",
     "save changes": "Enregistrer les modifications", "cancel": "Annuler", "delete": "Supprimer", "remove": "Retirer",
@@ -907,10 +931,11 @@ def memes_chiffres(texte, traduit):
         CHIFFRE.findall(unicodedata.normalize("NFKC", texte)))
 
 
-def traduction_aberrante(traduit):
-    """Le modèle s'est emballé : le même caractère répété (« ?????? »), ou quelques mots en boucle
-    (« la mastication de la mastication de la… », « * * * * »)."""
-    if re.search(r"(\S)\1{9,}", traduit):
+def traduction_aberrante(traduit, source=""):
+    """Le modèle s'est emballé : le même caractère répété (« ?????? ») sans l'être dans `source` (« Loading……… »,
+    « ---------- » sont de vrais textes), ou quelques mots en boucle (« la mastication de la mastication de la… »)."""
+    repetition = re.search(r"(\S)\1{9,}", traduit)
+    if repetition and repetition.group(1) * 10 not in source:
         return True
     mots = traduit.split()
     return len(mots) >= 12 and len(set(mots)) < 0.35 * len(mots)
@@ -1133,6 +1158,8 @@ def sans_emojis_autour(texte):
 def ressemble_a_un_pseudo(texte, photo_a_cote):
     """Pseudo ou nom propre (à ne pas traduire) ? `photo_a_cote()` dit si une photo de
     profil est juste à côté du texte."""
+    if libelle_du_glossaire(texte):
+        return False  # « Logout » : un mot inconnu du dictionnaire, mais un libellé connu
     mots = texte.split()
     if a_des_caracteres_decoratifs(texte) and len(mots) <= 6:
         coeur = sans_emojis_autour(texte)
@@ -1289,6 +1316,11 @@ class Lecteur:
         # sites), et champs de saisie (recherche, message en cours d'écriture : jamais couverts).
         self.types_zones_ignorees = {UIA.UIA_TabItemControlTypeId, UIA.UIA_ToolBarControlTypeId,
                                      UIA.UIA_EditControlTypeId}
+        # Spotify : titres, artistes, albums et playlists sont des liens, des lignes de liste, de tableau ou de la
+        # file d'attente, ou le grand titre d'une page (« THE FINALS » devenait « LES FINALES », « Call Me Maybe »
+        # « Appelez-moi peut-être ») ; seul le reste (boutons, textes) est traduit.
+        self.types_noms_spotify = {UIA.UIA_HyperlinkControlTypeId, UIA.UIA_DataItemControlTypeId,
+                                   UIA.UIA_TreeItemControlTypeId, UIA.UIA_ListItemControlTypeId}
 
         condition_type = None
         for t in self.types_texte | self.types_bloc | self.types_zones_ignorees:
@@ -1421,6 +1453,17 @@ class Lecteur:
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         return pid.value == os.getpid()
 
+    def _zone_ignoree(self, programme, type_, type_localise):
+        """Un élément dont on ne traduit rien (ni ce qu'il contient) : onglets, barres d'outils, champs de saisie ;
+        zones de noms de Discord ; titres, artistes et playlists de Spotify."""
+        localise = (type_localise or "").lower()
+        if programme == "discord.exe" and type_ == self.UIA.UIA_GroupControlTypeId and localise in ZONES_DE_NOMS_DISCORD:
+            return True
+        if programme == "spotify.exe" and (type_ in self.types_noms_spotify or (
+                type_ == self.UIA.UIA_TextControlTypeId and localise in ("titre", "heading"))):
+            return True
+        return type_ in self.types_zones_ignorees
+
     def _lire_fenetre(self, hwnd, rect_fenetre, devant):
         vus = []
         programme = programme_de_fenetre(hwnd)
@@ -1452,9 +1495,7 @@ class Lecteur:
             # texte ne compte pas comme « vu » (sinon il bloquerait l'analyse d'image à cet endroit).
             if any(x1 < c and a < x2 and y1 < d and b < y2 for a, b, c, d in devant):
                 continue
-            if type_ in self.types_zones_ignorees or (
-                    programme == "discord.exe" and type_ == self.UIA.UIA_GroupControlTypeId
-                    and (el.CachedLocalizedControlType or "").lower() in ZONES_DE_NOMS_DISCORD):
+            if self._zone_ignoree(programme, type_, el.CachedLocalizedControlType):
                 zones_ignorees.append((x1, y1, x2, y2))
                 nom = " ".join((el.CachedName or "").split())
                 if type_ == self.UIA.UIA_EditControlTypeId and A_TRADUIRE.search(nom) and len(nom) <= 80:
@@ -1784,6 +1825,25 @@ class LecteurImage:
         self.boucle = asyncio.new_event_loop()
         self.aides = None  # autres lecteurs, pour lire une grande zone à plusieurs (créés au premier besoin)
         self.parallele = None
+        self.memoire = collections.OrderedDict()  # (place, zone, empreinte des pixels) -> textes lus
+        self.evitees = 0  # lectures évitées par la mémoire (pour le relevé du journal)
+
+    MEMOIRE = 48  # zones gardées
+
+    def lire_memoire(self, pixels, origine, zone):
+        """Comme lire, mais une zone déjà lue à la même place et identique pixel pour pixel (curseur qui clignote,
+        bouton survolé puis quitté, animation qui revient) redonne son résultat sans relire : ~250 ms gagnées."""
+        x1, y1, x2, y2 = zone
+        cle = (origine, zone, zlib.crc32(np.ascontiguousarray(pixels[y1:y2, x1:x2])))
+        if cle in self.memoire:
+            self.memoire.move_to_end(cle)
+            self.evitees += 1
+            return self.memoire[cle]
+        lus = self.lire(pixels, origine, zone)
+        self.memoire[cle] = lus
+        while len(self.memoire) > self.MEMOIRE:
+            self.memoire.popitem(last=False)
+        return lus
 
     def lire(self, pixels, origine, zone=None):
         """Morceaux de texte de l'image (ou seulement de la zone (x1, y1, x2, y2) de l'image),
@@ -2632,7 +2692,7 @@ class SuiviEcran:
         grande = (zone[2] - zone[0]) * (zone[3] - zone[1]) >= 0.3 * hauteur * largeur
         images_en_cours = self.parallele.submit(zones_images, pixels, zone) if grande else None
         nouveaux = []  # (texte lu, cadre dans l'image, anciens textes qu'il remplace)
-        lus = self.ocr.lire(pixels, origine, zone)
+        lus = self.ocr.lire_memoire(pixels, origine, zone)
         if zone[0] > 0 or zone[2] < largeur:
             # Une ligne coupée par le bord gauche ou droit de la zone : la bande est relue sur toute la largeur.
             if any((m.x - ox <= zone[0] + 2 and zone[0] > 0) or (m.x - ox + m.l >= zone[2] - 2 and zone[2] < largeur)
@@ -3110,7 +3170,7 @@ class Traducteur:
     CONFIANCE_DEJA_TRADUIT = 0.35  # le texte ressemble déjà assez à la langue voulue
 
     MOTS_PHRASE = 2  # à partir de ce nombre de mots, un texte va au grand modèle s'il existe
-    VERSION_CACHE = 7  # à changer quand les modèles changent : les anciennes traductions sont oubliées
+    VERSION_CACHE = 9  # à changer quand les modèles ou les règles changent : les anciennes traductions sont oubliées
 
     def __init__(self, langues=(), mots=()):
         self.detecteur = DetecteurLangue()
@@ -3120,6 +3180,7 @@ class Traducteur:
         self.generation = 0  # augmente quand les langues ou les modèles changent
         self.installees = None  # paires de langues dont le modèle est installé (relu après un téléchargement)
         self.cache = {}  # (texte, cible) -> traduction, ou None si rien à traduire
+        self.de_ia = set()  # (texte, cible) traduits par l'IA locale (gardés sur le disque : retirés si on la coupe)
         self.cache_modifie = False
         self.modeles = {}
         self.grands = {}  # (de, vers) -> grand modèle (traducteur, découpeur source, découpeur cible) ou None
@@ -3248,7 +3309,8 @@ class Traducteur:
             # (Les nombres protégés : « 21h » ne doit pas devenir « 9:00 ».)
             resultats = self._traduire_avec_reperes(morceaux, de, vers, self.mots, chiffres=True)
             traduits = {m: retoucher_francais(r) if vers == "fr" else r
-                        for m, r in zip(morceaux, resultats) if r and not traduction_aberrante(r)}
+                        for m, r in zip(morceaux, resultats)
+                        if r and memes_chiffres(m, r) and not traduction_aberrante(r, m)}
             if not traduits:
                 return None
             return "".join(p.replace(p.strip(), traduits[p.strip()], 1) if i % 2 == 0 and traduits.get(p.strip()) else p
@@ -3278,6 +3340,7 @@ class Traducteur:
             if donnees.get("version") == self.VERSION_CACHE:
                 for cible, texte, traduit in donnees["traductions"]:
                     self.cache[(texte, cible)] = traduit
+                self.de_ia.update((texte, cible) for cible, texte in donnees.get("ia", ()))
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
 
@@ -3289,10 +3352,12 @@ class Traducteur:
             if len(self.cache) > 60_000:  # (une longue soirée sur un chat : la mémoire ne grossit pas sans fin)
                 self.cache = dict(list(self.cache.items())[-30_000:])
             entrees = [(cible, texte, traduit) for (texte, cible), traduit in self.cache.items() if traduit]
+            self.de_ia &= set(self.cache)
+            de_ia = [(cible, texte) for texte, cible in self.de_ia]
         try:
             provisoire = CACHE_TRADUCTIONS + ".tmp"
             with open(provisoire, "w", encoding="utf-8") as fichier:
-                json.dump({"version": self.VERSION_CACHE, "traductions": entrees[-30_000:]}, fichier,
+                json.dump({"version": self.VERSION_CACHE, "traductions": entrees[-30_000:], "ia": de_ia}, fichier,
                           ensure_ascii=False)
             os.replace(provisoire, CACHE_TRADUCTIONS)
         except OSError:
@@ -3339,7 +3404,10 @@ class Traducteur:
                 self.cache[(texte, cible)] = entier
                 continue
             try:
-                source = self._langue_a_traduire(self._normal(texte), cible)
+                # Un libellé du glossaire est de l'anglais, même trop court ou ambigu pour le détecteur (« Logout »,
+                # « Invite Me »).
+                source = "en" if cible == "fr" and "en" in self.langues and libelle_du_glossaire(texte) \
+                    else self._langue_a_traduire(self._normal(texte), cible)
             except Exception:  # un texte qui fait échouer la détection ne bloque pas les autres
                 log.exception("Langue de « %s » introuvable", texte[:80])
                 source = None
@@ -3358,7 +3426,8 @@ class Traducteur:
             try:
                 resultats = self._traduire_avec_reperes([self._normal(t) for t in lot], source, cible, self.mots,
                                                         argot=source == "en")
-            except RuntimeError:  # aucun modèle pour ces langues : inutile de réessayer
+            except ModeleAbsent:  # aucun modèle pour ces langues : inutile de réessayer (une autre erreur, comme
+                # la mémoire de la carte graphique pleine, est passagère : réessayée plus bas dans 30 s)
                 log.exception("Traduction %s → %s impossible", source, cible)
                 self.paires_impossibles.add((source, cible))
                 resultats = [None] * len(lot)
@@ -3377,13 +3446,26 @@ class Traducteur:
                         resultats[i] = traduit
                 except Exception:
                     log.exception("Nouvel essai avec les nombres protégés impossible")
+            # Un libellé avec une majuscule à chaque mot recopié tel quel (« Help Desk », « World Store » : pris pour
+            # un nom de marque) : retraduit écrit comme une phrase (« Help desk » -> « Service d'assistance »).
+            recopies = [i for i, (texte, traduit) in enumerate(zip(lot, resultats))
+                        if traduit and traduit.casefold() == texte.casefold() and 2 <= len(texte.split()) <= 4
+                        and texte.istitle()]
+            if recopies:
+                try:
+                    for i, traduit in zip(recopies, self._traduire_avec_reperes(
+                            [" ".join([lot[i].split()[0]] + [m.lower() for m in lot[i].split()[1:]]) for i in recopies],
+                            source, cible, self.mots, argot=source == "en")):
+                        resultats[i] = traduit
+                except Exception:
+                    log.exception("Nouvel essai en minuscules impossible")
             for texte, traduit in zip(lot, resultats):
                 if traduit and not memes_chiffres(texte, traduit):
                     traduit = None  # la traduction a changé un nombre : on garde le texte d'origine
                 if traduit and len(texte.split()) == 1 and not CJK.search(texte) and len(traduit.split()) > 4:
                     log.info("Traduction inventée écartée : %s -> %s", texte[:40], traduit[:80])
                     traduit = None  # un seul mot devenu toute une phrase : le modèle a inventé
-                if traduit and traduction_aberrante(traduit):
+                if traduit and traduction_aberrante(traduit, texte):
                     log.info("Traduction aberrante écartée : %s", traduit[:80])
                     traduit = None  # le modèle s'est emballé : mieux vaut le texte d'origine
                 if traduit and cible == "fr":
@@ -3470,6 +3552,11 @@ class Traducteur:
             voulu = sum(frequence_mot(m, cible) for m in mots) / len(mots)
             if anglais >= 3.0 and anglais - voulu >= (0.8 if len(mots) <= 3 else 1.2):
                 return "en"
+            # Un libellé de deux ou trois mots dont l'un est nettement anglais, les autres existant aussi dans la
+            # langue voulue (« World Info », « Public Link » : « info », « public » sont aussi français).
+            if 2 <= len(mots) <= 3 and anglais > voulu and any(
+                    frequence_mot(m, "en") - frequence_mot(m, cible) >= 1.0 for m in mots):
+                return "en"
         # Japonais et coréen se reconnaissent à leur écriture, même en un seul mot (« 利用規約 » seul
         # est en caractères chinois, partagés par les deux langues : le détecteur tranche).
         lettres = len(re.findall(r"[^\W\d_]", texte))
@@ -3513,7 +3600,7 @@ class Traducteur:
         # Pas de modèle direct : on passe par l'anglais.
         if "en" not in (source, cible) and {(source, "en"), ("en", cible)} <= installees:
             return [(source, "en"), ("en", cible)]
-        raise RuntimeError(f"Aucun modèle de traduction {source} → {cible} (pas encore téléchargé ?)")
+        raise ModeleAbsent(f"Aucun modèle de traduction {source} → {cible} (pas encore téléchargé ?)")
 
     def _modele(self, de, vers):
         if (de, vers) not in self.modeles:
@@ -3603,19 +3690,31 @@ class Traducteur:
         return sortie
 
 
-# --------------------------------------------------------------------------- IA locale (Ollama)
+# --------------------------------------------------------------------------- IA locale
 #
-# « Qualité maximale » (réglage) : une IA installée sur ce PC (Ollama) retraduit en arrière-plan ce que les modèles de
-# traduction ont déjà traduit (les phrases). Elle rend le sens et les expressions (« Break a leg » n'est plus « Cassez
-# une jambe » mais « Bonne chance ») ; ses traductions remplacent les premières dès qu'elles sont prêtes. Rien ne part
-# sur internet.
+# « Qualité maximale » (réglage) : une IA sur ce PC retraduit en arrière-plan ce que les modèles de traduction ont déjà
+# traduit (les phrases). Elle rend le sens et les expressions (« Break a leg » n'est plus « Cassez une jambe » mais
+# « Bonne chance ») ; ses traductions remplacent les premières dès qu'elles sont prêtes. Rien ne part sur internet.
+# Elle tourne dans llama.cpp (le moteur dont Ollama se sert lui-même), téléchargé par le programme avec elle : rien à
+# installer. Carte graphique seulement (NVIDIA, AMD ou Intel, par Vulkan) : sur le processeur, plusieurs secondes par
+# phrase.
 
-OLLAMA = "http://127.0.0.1:11434"
-# TranslateGemma 4B (Google, fait pour traduire, 3,3 Go sur la carte graphique) : comparé à TranslateGemma 12B et à
+DOSSIER_IA = os.path.join(APP_DIR, "ia")
+# Moteur : llama-server, version Vulkan (30 Mo, toutes les cartes graphiques), publiée par les auteurs de llama.cpp sur
+# GitHub ; version figée, empreinte vérifiée. Mesuré sur une RTX 5070 Ti : ~0,2 s par phrase, 2,8 Go sur la carte.
+MOTEUR_IA = {"version": "b11617", "fichier": "llama-b11617-bin-win-vulkan-x64.zip",
+             "sha256": "540649b52663e8c9c94613288824dc4c96dfb7b226d2ec2507dfd1279dc4c60c"}
+# TranslateGemma 4B (Google, fait pour traduire ; conditions d'utilisation de Gemma) : comparé à TranslateGemma 12B et à
 # Qwen3 8B sur des expressions, de l'argot, des pages de boutique (japonais, chinois) : presque aussi bon que le 12B,
 # meilleur que Qwen3 (qui inventait : « Ce mod ne fonctionne pas »), et il laisse de la place à un jeu (VRChat) sur la
-# carte. Les boutons courts restent aux modèles habituels : toutes ces IA en faisaient « Projet ouvert » (Open Project).
-MODELE_IA = "translategemma:4b"
+# carte. Au format GGUF, compressé « Q4_K_M » comme celui d'Ollama (2,4 Go), copie libre d'accès de mradermacher sur
+# Hugging Face (celle de Google demande un compte) ; version figée, empreinte vérifiée.
+# Les boutons courts restent aux modèles habituels : toutes ces IA en faisaient « Projet ouvert » (Open Project).
+MODELE_IA = {"depot": "mradermacher/translategemma-4b-it-GGUF", "revision": "d37868f759d2f817a43d28dd80cf9f982ffa62fd",
+             "fichier": "translategemma-4b-it.Q4_K_M.gguf",
+             "sha256": "81200d03e843d2ec1ece6eeafe7d13cb6e5211e1fcd336ade55790b683a08330"}
+MEMOIRE_IA = 4000  # Mo au moins sur la carte graphique (l'IA en prend 2,8)
+VEILLE_IA = 15 * 60  # s sans rien à retraduire : le moteur s'arrête et rend la mémoire de la carte (à un jeu)
 MOTS_IA = 4  # à partir de ce nombre de mots (deux caractères chinois ou japonais valent un mot), l'IA retraduit
 NOMS_ANGLAIS = {"fr": "French", "en": "English", "es": "Spanish", "de": "German", "it": "Italian", "pt": "Portuguese",
                 "nl": "Dutch", "pl": "Polish", "ro": "Romanian", "sv": "Swedish", "tr": "Turkish", "el": "Greek",
@@ -3624,24 +3723,223 @@ NOMS_ANGLAIS = {"fr": "French", "en": "English", "es": "Spanish", "de": "German"
                 "da": "Danish", "nb": "Norwegian", "fi": "Finnish", "bg": "Bulgarian", "he": "Hebrew", "fa": "Persian"}
 
 
-def ollama(chemin, corps=None, delai=120):
-    """Une demande à Ollama (sur ce PC) : sa réponse JSON."""
-    requete = urllib.request.Request(OLLAMA + chemin, json.dumps(corps).encode() if corps is not None else None,
-                                     {"Content-Type": "application/json"})
-    with urllib.request.urlopen(requete, timeout=delai) as reponse:
-        return json.load(reponse)
+def moteur_ia():
+    return os.path.join(DOSSIER_IA, "moteur", "llama-server.exe")
 
 
-def chemin_ollama():
-    return os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama app.exe")
+def chemin_modele_ia():
+    return os.path.join(DOSSIER_IA, MODELE_IA["fichier"])
 
 
-def ollama_repond():
+def ia_presente():
+    """Le moteur et le modèle de l'IA sont-ils téléchargés ?"""
+    return os.path.exists(moteur_ia()) and os.path.exists(chemin_modele_ia())
+
+
+def empreinte_sha256(chemin):
+    empreinte = hashlib.sha256()
+    with open(chemin, "rb") as f:
+        while bloc := f.read(1 << 20):
+            empreinte.update(bloc)
+    return empreinte.hexdigest()
+
+
+def installer_moteur_ia(progression, annule):
+    """Télécharge le moteur de l'IA (llama.cpp, 30 Mo, depuis GitHub), vérifié, et n'en garde que le serveur et ses
+    bibliothèques. False si annulé."""
+    lien = f"https://github.com/ggml-org/llama.cpp/releases/download/{MOTEUR_IA['version']}/{MOTEUR_IA['fichier']}"
+    os.makedirs(DOSSIER_TELECHARGEMENTS, exist_ok=True)
+    chemin = os.path.join(DOSSIER_TELECHARGEMENTS, MOTEUR_IA["fichier"])
+
+    def avancer(lu, total):
+        progression(f"IA locale (moteur) : {lu // 2**20} / {total // 2**20} Mo", lu / total if total else 0.0)
+
     try:
-        ollama("/api/version", delai=2)
+        if not _telecharger([lien], chemin, avancer, annule):
+            return False
+        progression("IA locale (moteur) : vérification…", 1.0)
+        if empreinte_sha256(chemin) != MOTEUR_IA["sha256"]:
+            raise OSError("moteur de l'IA abîmé pendant le téléchargement")
+        dossier = os.path.dirname(moteur_ia())
+        provisoire = dossier + ".nouveau"
+        shutil.rmtree(provisoire, ignore_errors=True)
+        with zipfile.ZipFile(chemin) as archive:
+            for nom in archive.namelist():
+                if nom.endswith(".dll") or nom == "llama-server.exe" or nom.startswith("LICENSE"):
+                    archive.extract(nom, provisoire)
+        if not os.path.exists(os.path.join(provisoire, "llama-server.exe")):
+            raise RuntimeError("archive du moteur de l'IA incomplète")
+        shutil.rmtree(dossier, ignore_errors=True)
+        os.replace(provisoire, dossier)
+        log.info("Moteur de l'IA installé (llama.cpp %s)", MOTEUR_IA["version"])
         return True
-    except Exception:
-        return False
+    finally:
+        try:
+            os.remove(chemin)
+        except OSError:
+            pass
+
+
+def installer_modele_ia(progression, annule):
+    """Télécharge le modèle de l'IA (TranslateGemma 4B, 2,4 Go, depuis Hugging Face), vérifié. False si annulé."""
+    lien = f"https://huggingface.co/{MODELE_IA['depot']}/resolve/{MODELE_IA['revision']}/{MODELE_IA['fichier']}"
+    os.makedirs(DOSSIER_TELECHARGEMENTS, exist_ok=True)
+    chemin = os.path.join(DOSSIER_TELECHARGEMENTS, MODELE_IA["fichier"])
+
+    def avancer(lu, total):
+        progression(f"IA locale : {lu // 2**20} / {total // 2**20} Mo", lu / total if total else 0.0)
+
+    try:
+        if not _telecharger([lien], chemin, avancer, annule):
+            return False
+        progression("IA locale : vérification…", 1.0)
+        if empreinte_sha256(chemin) != MODELE_IA["sha256"]:
+            raise OSError("modèle de l'IA abîmé pendant le téléchargement")
+        os.makedirs(DOSSIER_IA, exist_ok=True)
+        os.replace(chemin, chemin_modele_ia())
+        log.info("Modèle de l'IA installé (%s)", MODELE_IA["fichier"])
+        return True
+    finally:
+        try:
+            os.remove(chemin)
+        except OSError:
+            pass
+
+
+def choisir_carte_ia(liste):
+    """D'après la liste des cartes graphiques du moteur (llama-server -v --list-devices) : (« Vulkan0 », nom) de la carte
+    où l'IA tournera, ou None. Une vraie carte (pas la puce graphique du processeur, « uma: 1 » : trop lente) avec assez
+    de mémoire ; la plus grande s'il y en a plusieurs."""
+    integrees = {numero for numero, uma in re.findall(r"ggml_vulkan: (\d+) = .*?\| uma: (\d)", liste) if uma == "1"}
+    cartes = [(int(memoire), f"Vulkan{numero}", nom) for numero, nom, memoire
+              in re.findall(r"^\s*Vulkan(\d+): (.+?) \((\d+) MiB, \d+ MiB free\)", liste, re.M)
+              if numero not in integrees and int(memoire) >= MEMOIRE_IA]
+    return max(cartes)[1:] if cartes else None
+
+
+def carte_pour_ia():
+    """La carte graphique où l'IA tournera (voir choisir_carte_ia), demandée au moteur. OSError s'il ne se lance pas."""
+    try:
+        sortie = subprocess.run([moteur_ia(), "-v", "--list-devices"], cwd=os.path.dirname(moteur_ia()),
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                timeout=60, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+    except subprocess.SubprocessError as e:
+        raise OSError(str(e)) from e
+    return choisir_carte_ia(sortie.decode("utf-8", "replace"))
+
+
+class _LimitesTache(ctypes.Structure):
+    """JOBOBJECT_EXTENDED_LIMIT_INFORMATION (Windows)."""
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD),
+                ("IoInfo", ctypes.c_uint64 * 6), ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+_TACHE_WINDOWS = []  # (le « job » Windows des processus lancés par le programme, créé une fois)
+
+
+def lier_au_programme(processus):
+    """Ce processus s'arrêtera avec le programme, même si celui-ci plante : il est mis dans un « job » Windows qui tue
+    ses processus quand il est fermé, ce que Windows fait à la fin du programme."""
+    noyau = ctypes.WinDLL("kernel32", use_last_error=True)
+    noyau.CreateJobObjectW.restype = wintypes.HANDLE
+    noyau.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    noyau.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    if not _TACHE_WINDOWS:
+        tache = noyau.CreateJobObjectW(None, None)
+        limites = _LimitesTache(LimitFlags=0x2000)  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not tache or not noyau.SetInformationJobObject(tache, 9, ctypes.byref(limites), ctypes.sizeof(limites)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        _TACHE_WINDOWS.append(tache)
+    if not noyau.AssignProcessToJobObject(_TACHE_WINDOWS[0], int(processus._handle)):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+class MoteurIA:
+    """Le moteur de l'IA (llama-server) lancé par le programme : invisible, joignable depuis ce PC seulement (adresse
+    locale, port au hasard, clé secrète : une page web ne peut pas s'en servir). Démarré au premier besoin, arrêté après
+    VEILLE_IA sans travail, quand l'IA est coupée et quand le programme se ferme (même s'il plante)."""
+
+    def __init__(self):
+        self.carte = None  # (« Vulkan0 », nom) où tourne l'IA ; False : pas de carte adaptée ; None : pas encore cherchée
+        self.processus = None
+        self.port, self.cle = 0, ""
+        self.servi_le = 0.0
+        self.verrou = threading.Lock()
+        self.ouvreur = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # (jamais par un proxy)
+
+    def demarrer(self):
+        """Lance le moteur s'il ne tourne pas, et attend qu'il ait chargé le modèle sur la carte (quelques secondes)."""
+        with self.verrou:
+            if self.processus is not None and self.processus.poll() is None:
+                return
+            with socket.socket() as essai:  # (un port libre)
+                essai.bind(("127.0.0.1", 0))
+                self.port = essai.getsockname()[1]
+            self.cle = secrets.token_hex(16)
+            self.servi_le = time.monotonic()  # (pendant qu'il démarre, il n'est pas « sans travail » : en_veille l'attend)
+            # (Le modèle est désigné depuis son dossier : un chemin avec des lettres d'une autre langue que celle de
+            # Windows, dans le nom d'utilisateur, ne passerait pas.)
+            with open(os.path.join(DOSSIER_IA, "journal-moteur.txt"), "wb") as journal:
+                self.processus = subprocess.Popen(
+                    [moteur_ia(), "-m", MODELE_IA["fichier"], "--host", "127.0.0.1", "--port", str(self.port),
+                     "--api-key", self.cle, "--device", self.carte[0], "-ngl", "99", "-c", "4096", "-np", "1"],
+                    cwd=DOSSIER_IA, stdout=journal, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                lier_au_programme(self.processus)
+            except OSError:
+                log.exception("IA locale : moteur non lié au programme")
+            log.info("IA locale : démarrage du moteur sur %s", self.carte[1])
+            processus, fin = self.processus, time.monotonic() + 180
+            while time.monotonic() < fin:
+                if self.processus is not processus:  # (arrêté pendant son démarrage : programme fermé, IA coupée)
+                    raise RuntimeError("le moteur de l'IA a été arrêté pendant son démarrage")
+                if processus.poll() is not None:
+                    self.processus = None
+                    raise RuntimeError(f"le moteur de l'IA s'est arrêté (code {processus.returncode}, voir "
+                                       "ia\\journal-moteur.txt)")
+                try:
+                    with self.ouvreur.open(f"http://127.0.0.1:{self.port}/health", timeout=2):
+                        self.servi_le = time.monotonic()
+                        return
+                except (OSError, HTTPException):  # (503 : le modèle se charge encore)
+                    time.sleep(0.5)
+            processus.kill()
+            self.processus = None
+            raise TimeoutError("le moteur de l'IA ne démarre pas (voir ia\\journal-moteur.txt)")
+
+    def completer(self, invite, longueur):
+        """La suite de l'invite écrite par l'IA (au plus `longueur` jetons)."""
+        self.demarrer()
+        corps = {"prompt": invite, "n_predict": longueur, "temperature": 0, "stop": ["<end_of_turn>"]}
+        requete = urllib.request.Request(f"http://127.0.0.1:{self.port}/completion", json.dumps(corps).encode(),
+                                         {"Content-Type": "application/json", "Authorization": "Bearer " + self.cle})
+        with self.ouvreur.open(requete, timeout=120) as reponse:
+            texte = json.load(reponse)["content"]
+        self.servi_le = time.monotonic()
+        return texte
+
+    def en_veille(self):
+        """Arrête le moteur s'il n'a rien fait depuis VEILLE_IA : la carte graphique retrouve sa mémoire."""
+        if self.processus is not None and time.monotonic() - self.servi_le > VEILLE_IA:
+            log.info("IA locale : moteur arrêté (rien à retraduire depuis %d min)", VEILLE_IA // 60)
+            self.arreter()
+
+    def arreter(self):
+        """Arrête le moteur tout de suite, même pendant son démarrage (sans attendre son verrou : fermer le programme
+        pendant que le modèle se charge ne doit pas figer la fenêtre)."""
+        processus, self.processus = self.processus, None
+        if processus is not None and processus.poll() is None:
+            processus.terminate()
+            try:
+                processus.wait(5)
+            except subprocess.TimeoutExpired:
+                pass
 
 
 class IALocale:
@@ -3654,11 +3952,11 @@ class IALocale:
         self.traducteur, self.pret = traducteur, pret
         self.file = collections.OrderedDict()  # (texte, cible) -> None, dans l'ordre de lecture
         self.faites = set()  # (texte, cible) déjà vus par l'IA (gardés ou non)
-        self.gardees = set()  # (texte, cible) dont la traduction est celle de l'IA (retirées si on la coupe)
         self.verrou = threading.Lock()
         self.reveil = threading.Event()
         self.actif = False
         self.etat = ""
+        self.moteur = MoteurIA()
 
     def a_ameliorer(self, texte):
         """Ce que l'IA retraduit : une phrase (pas un bouton court), sans code protégé, sans « Mes mots », pas un
@@ -3686,6 +3984,7 @@ class IALocale:
         while not arret.is_set():
             self.reveil.wait(5)
             self.reveil.clear()
+            self.moteur.en_veille()
             while self.actif and not arret.is_set() and self.file:
                 with self.verrou:
                     lot = list(self.file)[:self.LOT]
@@ -3697,23 +3996,30 @@ class IALocale:
                 textes = [t for t, _ in lot if self.traducteur.cache.get((t, cible))]  # (traduits par les modèles)
                 if not textes:
                     continue
+                generation = self.traducteur.generation
                 try:
                     resultats = self._traduire(textes, cible)
                 except Exception as e:
                     log.warning("IA locale : pas de réponse (%s)", e)
-                    self.etat = "Ollama ne répond pas : est-il lancé ?"
+                    self.etat = "le moteur de l'IA ne répond pas (voir journal.txt)"
                     with self.verrou:
                         self.faites.difference_update(lot)  # (réessayés plus tard)
                     arret.wait(10)
                     break
                 gardes = 0
                 with self.traducteur.verrou:
+                    if self.traducteur.generation != generation:
+                        # « Mes mots » ou les langues ont changé pendant ce lot : traduit avec les anciennes règles,
+                        # il n'est pas gardé (ces textes seront reproposés).
+                        with self.verrou:
+                            self.faites.difference_update(lot)
+                        continue
                     for texte, traduit in zip(textes, resultats):
                         traduit = self._verifier(texte, traduit, cible)
-                        if traduit:
+                        if traduit and self.a_ameliorer(texte):
                             self.traducteur.cache[(texte, cible)] = traduit
                             self.traducteur.cache_modifie = True
-                            self.gardees.add((texte, cible))
+                            self.traducteur.de_ia.add((texte, cible))
                             gardes += 1
                 if gardes:
                     self.etat = "Active"
@@ -3725,8 +4031,8 @@ class IALocale:
         with self.verrou:
             self.file.clear()
             self.faites.clear()
-            gardees, self.gardees = self.gardees, set()
-        with self.traducteur.verrou:
+        with self.traducteur.verrou:  # (toutes ses traductions, même d'avant un redémarrage : voir Traducteur.de_ia)
+            gardees, self.traducteur.de_ia = self.traducteur.de_ia, set()
             for cle in gardees:
                 self.traducteur.cache.pop(cle, None)
             self.traducteur.cache_modifie = True
@@ -3735,18 +4041,25 @@ class IALocale:
     def _verifier(self, texte, traduit, cible):
         """La traduction de l'IA, retouchée, ou None si elle n'est pas sûre (nombres changés, beaucoup trop longue,
         explications au lieu d'une traduction)."""
-        traduit = " ".join((traduit or "").split()).strip("\"«» ")
+        lignes = [" ".join(ligne.split()) for ligne in (traduit or "").splitlines()]
+        traduit = ("\n".join(l for l in lignes if l) if "\n" in texte else " ".join(lignes)).strip()
+        for ouvrant, fermant in (('"', '"'), ("«", "»"), ("“", "”")):
+            if len(traduit) > 2 and traduit[0] == ouvrant and traduit[-1] == fermant \
+                    and not texte.strip().startswith(ouvrant) \
+                    and len(re.findall("[%s%s]" % (ouvrant, fermant), traduit)) == 2:  # (une seule paire, autour)
+                traduit = traduit[1:-1].strip()  # (l'IA a mis toute sa réponse entre guillemets)
         if not traduit or traduit.casefold() == texte.casefold() or len(traduit) > 3 * len(texte) + 40 \
-                or not memes_chiffres(texte, traduit) or traduction_aberrante(traduit):
+                or not memes_chiffres(texte, traduit) or traduction_aberrante(traduit, texte):
             return None
         if cible == "fr":
             traduit = retoucher_francais(traduit)
         return traduit.upper() if self.traducteur._en_capitales(texte) else traduit
 
     def _traduire(self, textes, cible):
-        """Une traduction par texte (TranslateGemma : un texte par demande, avec la consigne qu'il attend)."""
+        """Une traduction par texte (TranslateGemma : un texte par demande, avec la consigne qu'il attend) ; "" pour un
+        texte que le moteur refuse (trop long pour lui)."""
         sortie = []
-        for i, texte in enumerate(textes):
+        for texte in textes:
             with self.traducteur.verrou:
                 source = self.traducteur._langue(texte, cible) or "en"
             de, vers = NOMS_ANGLAIS.get(source, "English"), NOMS_ANGLAIS.get(cible, "French")
@@ -3755,10 +4068,14 @@ class IALocale:
                       f"vocabulary, and cultural sensitivities.\nProduce only the {vers} translation, without any "
                       f"additional explanations or commentary. Please translate the following {de} text into "
                       f"{vers}:\n\n\n{texte}")
-            reponse = ollama("/api/chat", {"model": MODELE_IA, "stream": False, "keep_alive": "15m",
-                                           "options": {"temperature": 0, "num_predict": 2 * len(texte) + 64},
-                                           "messages": [{"role": "user", "content": invite}]})
-            sortie.append(reponse["message"]["content"])
+            try:
+                sortie.append(self.moteur.completer(f"<start_of_turn>user\n{invite}<end_of_turn>\n<start_of_turn>model\n",
+                                                    min(2 * len(texte) + 64, 1536)))
+            except urllib.error.HTTPError as e:
+                if e.code != 400:
+                    raise
+                log.warning("IA locale : texte refusé par le moteur (%d caractères)", len(texte))
+                sortie.append("")
         return sortie
 
 
@@ -4310,6 +4627,18 @@ class Calque:
         commun = surface_commune((a.x, a.y, a.x + a.l, a.y + a.h), (b.x, b.y, b.x + b.l, b.y + b.h))
         return commun > 0.5 * min(a.l * a.h, b.l * b.h)
 
+    @staticmethod
+    def _presque_pareil(ancienne, nouvelle, ecart=8):
+        """Deux dispositions de la même traduction (mêmes lignes, même style) à quelques pixels près : place,
+        taille et couleurs (mesurées sur des cadres un peu différents) presque égales."""
+        if not ancienne or not nouvelle:
+            return False
+        lignes_a, taille_a, xa, ya, la, ha, fond_a, encre_a, *reste_a = ancienne
+        lignes_b, taille_b, xb, yb, lb, hb, fond_b, encre_b, *reste_b = nouvelle
+        return (lignes_a == lignes_b and reste_a == reste_b and abs(taille_a - taille_b) <= 1
+                and max(abs(xa - xb), abs(ya - yb), abs(la - lb), abs(ha - hb)) <= ecart
+                and all(abs(p - q) <= 16 for p, q in zip(tuple(fond_a) + tuple(encre_a), tuple(fond_b) + tuple(encre_b))))
+
     def preparer(self, textes, traductions, couleurs, obstacles=()):
         """Met en page et dessine les traductions (dans le fil de traduction : la fenêtre
         principale n'a plus qu'à les afficher). `obstacles` : tous les textes lus à l'écran,
@@ -4363,9 +4692,14 @@ class Calque:
                     continue
                 voisins = [a for a in partants if self._meme_place(a, texte)]
                 identique = next((a for a in voisins if self.dispositions.get(a) == disposition), None)
-                if identique is not None:
-                    vitre = partants.pop(identique)
-                    self.dispositions.pop(identique, None)
+                # Même traduction dessinée pareil, à quelques pixels près : le même texte lu tantôt par
+                # l'accessibilité, tantôt par l'image (leurs cadres diffèrent un peu). La vitre reste où elle est,
+                # au lieu d'être reposée à chaque relecture (les traductions clignotaient : VRChat Creator Companion).
+                proche = identique or next((a for a in voisins if self._presque_pareil(self.dispositions.get(a),
+                                                                                       disposition)), None)
+                if proche is not None:
+                    vitre = partants.pop(proche)
+                    disposition = self.dispositions.pop(proche, None) or disposition
                 else:
                     vitre = self._vitre()
                     vitre.montrer(image, disposition[2], disposition[3], fondu=self.fondu and not voisins)
@@ -4552,10 +4886,6 @@ class Calque:
         if any(x < c and a < x + l and y < d and b < y + h for a, b, c, d in devant):
             return None  # une fenêtre est posée dessus : la traduction flotterait par-dessus elle
         return tuple(lignes), taille, int(x), int(y), l, h, tuple(fond), tuple(encre), centre, chasse, gras
-
-    def textes_traduits(self):
-        """Textes d'origine actuellement recouverts par une traduction."""
-        return [t.texte.replace(MARQUE_CODE, "") for t in self.affiches]
 
 
 # --------------------------------------------------------------------------- extension du navigateur
@@ -4748,24 +5078,518 @@ class RequeteExtension(BaseHTTPRequestHandler):
                              **({"langue": langue} if langue is not None else {})})
 
 
+# --------------------------------------------------------------------------- neumorphisme
+#
+# Style de la fenêtre : tout est de la couleur du fond, en relief (ombre claire en haut à gauche, sombre en bas à
+# droite) ou creusé. customtkinter ne dessine pas d'ombres : ce sont des images (PIL), refaites à la taille de chaque
+# élément. Clair ou sombre, comme Windows (customtkinter choisit l'image du mode en cours).
+
+FOND = ("#E4E9F0", "#252831")
+FOND_CREUX = ("#DCE2EA", "#1F2129")  # champs de saisie, listes
+STYLE_BOUTON = dict(fg_color=FOND, hover_color=("#EDF1F6", "#2C3039"), text_color=ACCENT, corner_radius=10,
+                    font=("Segoe UI", 12, "bold"))
+TEXTE = ("#2F3645", "#E6E9F0")
+OMBRES = {False: ((255, 255, 255, 255), (163, 177, 198, 150)),  # mode clair : (lumière, ombre)
+          True: ((52, 57, 70, 255), (14, 15, 19, 255))}  # mode sombre
+
+
+@functools.lru_cache(maxsize=256)
+def image_relief(largeur, hauteur, rayon, creux, sombre, marge, decalage, flou):
+    """Les ombres d'un élément (pixels réels, marge pour l'ombre comprise) : en relief, ou creusé. Dessinées en
+    double taille puis réduites : bords nets."""
+    s = 2
+    l, h, r, m, d, f = largeur * s, hauteur * s, rayon * s, marge * s, decalage * s, flou * s
+    fond = FOND[sombre]
+    lumiere, ombre = OMBRES[sombre]
+    image = Image.new("RGBA", (l, h), fond)
+    r = min(r, (l - 2 * m) // 2, (h - 2 * m) // 2)  # (arrondi pas plus grand que la forme)
+    if l - 2 * m < 4 or h - 2 * m < 4:
+        return image.resize((largeur, hauteur))  # (trop petit, le temps de la mise en place : pas d'ombre)
+    cadre = (m, m, l - m, h - m)
+    if not creux:
+        for couleur, dx in ((ombre, d), (lumiere, -d)):  # (chacune à part : l'ombre ne cache pas la lumière)
+            calque = Image.new("RGBA", (l, h), couleur[:3] + (0,))
+            ImageDraw.Draw(calque).rounded_rectangle(tuple(v + dx for v in cadre), r, fill=couleur)
+            image.alpha_composite(calque.filter(ImageFilter.GaussianBlur(f)))
+        ImageDraw.Draw(image).rounded_rectangle(cadre, r, fill=fond)
+    else:
+        masque = Image.new("L", (l, h), 0)
+        ImageDraw.Draw(masque).rounded_rectangle(cadre, r, fill=255)
+        vide = Image.new("RGBA", (l, h), (0, 0, 0, 0))
+        x1, y1, x2, y2 = cadre
+        loin = l + h  # (le trou s'étend loin du côté opposé : chaque ombre reste de son côté, sans déborder)
+        for couleur, trou in ((ombre if sombre else ombre[:3] + (ombre[3] // 2,), (x1 + d, y1 + d, x2 + loin, y2 + loin)),
+                              (lumiere, (x1 - loin, y1 - loin, x2 - d, y2 - d))):
+            calque = Image.new("RGBA", (l, h), couleur)
+            # (Trou transparent de la même couleur : le flou ne grise pas la lumière en la mêlant à du noir.)
+            ImageDraw.Draw(calque).rounded_rectangle(trou, r, fill=couleur[:3] + (0,))
+            image.alpha_composite(Image.composite(calque.filter(ImageFilter.GaussianBlur(f * 0.6)), vide, masque))
+    return image.resize((largeur, hauteur), Image.LANCZOS)
+
+
+def couleur_windows(hexa):
+    """« #RRGGBB » -> COLORREF de Windows (0x00BBGGRR)."""
+    rouge, vert, bleu = (int(hexa[i:i + 2], 16) for i in (1, 3, 5))
+    return bleu << 16 | vert << 8 | rouge
+
+
+def teindre_cadre(fenetre):
+    """Le cadre de Windows (barre de titre, bord) aux couleurs du fond, coins arrondis : il se fond dans l'interface en
+    relief, en clair comme en sombre (suit le thème). Windows 11 ; ailleurs, le cadre reste celui de Windows."""
+    def appliquer(_mode=None):
+        try:
+            fenetre.update_idletasks()
+            hwnd = user32.GetParent(fenetre.winfo_id()) or fenetre.winfo_id()
+            sombre = ctk.get_appearance_mode() == "Dark"
+            for attribut, valeur in ((20, int(sombre)),  # DWMWA_USE_IMMERSIVE_DARK_MODE
+                                     (33, 2),  # DWMWA_WINDOW_CORNER_PREFERENCE : arrondis
+                                     (34, couleur_windows(FOND[sombre])),  # DWMWA_BORDER_COLOR : bord invisible
+                                     (35, couleur_windows(FOND[sombre])),  # DWMWA_CAPTION_COLOR
+                                     (36, couleur_windows(TEXTE[sombre]))):  # DWMWA_TEXT_COLOR
+                valeur = ctypes.c_int(valeur)
+                ctypes.windll.dwmapi.DwmSetWindowAttribute(wintypes.HWND(hwnd), attribut, ctypes.byref(valeur),
+                                                           ctypes.sizeof(valeur))
+        except Exception:
+            log.debug("Cadre de la fenêtre non teint", exc_info=True)
+
+    appliquer()
+    ctk.AppearanceModeTracker.add(appliquer, fenetre)
+
+
+def melanger_couleurs(a, b, t):
+    """La couleur à t (0 à 1) entre a et b (« #RRGGBB »)."""
+    a, b = (tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in (a, b))
+    return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(a, b))
+
+
+def en_douceur(t):
+    return 1 - (1 - t) ** 3  # (rapide au début, ralentit à la fin)
+
+
+def suivre_survol(dehors, morceaux, entree, sortie):
+    """entree() quand la souris arrive sur `dehors` (ou l'un de ses `morceaux`), sortie() quand elle en sort
+    vraiment : passer d'un morceau à l'autre ne compte pas (pas d'animation qui repart à chaque fois)."""
+    dedans = [False]
+
+    def arrivee(_e):
+        if not dedans[0]:
+            dedans[0] = True
+            entree()
+
+    def verifier():
+        x, y = dehors.winfo_pointerxy()
+        gauche, haut = dehors.winfo_rootx(), dehors.winfo_rooty()
+        if dedans[0] and not (gauche <= x < gauche + dehors.winfo_width() and haut <= y < haut + dehors.winfo_height()):
+            dedans[0] = False
+            sortie()
+
+    for morceau in morceaux:
+        morceau.bind("<Enter>", arrivee, add="+")
+        morceau.bind("<Leave>", lambda _e: dehors.after(30, verifier), add="+")
+
+
+def animer_bouton(bouton):
+    """Survol d'un bouton en fondu (la couleur glisse vers celle du survol) au lieu d'un changement d'un coup."""
+    normal, survol = bouton.cget("fg_color"), bouton.cget("hover_color")
+    if normal == "transparent" or getattr(bouton, "_survol_anime", False):
+        return
+    paires = [(n, s) for n, s in zip(*(c if isinstance(c, (tuple, list)) else (c, c) for c in (normal, survol)))]
+    if not all(isinstance(c, str) and c.startswith("#") and len(c) == 7 for paire in paires for c in paire):
+        return
+    bouton._survol_anime = True
+    bouton.configure(hover=False)
+    etat = {"t": 0.0, "but": 0.0, "minuterie": None}
+
+    def avancer():
+        pas = 1 / 6
+        etat["t"] = min(etat["but"], etat["t"] + pas) if etat["but"] > etat["t"] else max(etat["but"], etat["t"] - pas)
+        t = en_douceur(etat["t"])
+        bouton.configure(fg_color=tuple(melanger_couleurs(n, s, t) for n, s in paires))
+        etat["minuterie"] = bouton.after(20, avancer) if etat["t"] != etat["but"] else None
+
+    def aller(but):
+        etat["but"] = but
+        if etat["minuterie"] is None:
+            avancer()
+
+    suivre_survol(bouton, [bouton] + list(bouton.winfo_children()), lambda: aller(1.0), lambda: aller(0.0))
+
+
+def enfoncer(relief, bouton):
+    """Un bouton posé sur un relief : il s'enfonce quand on appuie, et remonte quand on lâche."""
+    for morceau in [bouton] + list(bouton.winfo_children()):
+        morceau.bind("<ButtonPress-1>", lambda _e: relief.changer("creux", 0.8), add="+")
+        morceau.bind("<ButtonRelease-1>", lambda _e: relief.changer("relief"), add="+")
+
+
+def apparaitre(fenetre, duree=160):
+    """Montre la fenêtre en fondu (transparente, puis de plus en plus opaque)."""
+    fenetre.attributes("-alpha", 0.0)
+    fenetre.deiconify()
+
+    def etape(numero, etapes=8):
+        fenetre.attributes("-alpha", en_douceur(numero / etapes))
+        if numero < etapes:
+            fenetre.after(duree // etapes, etape, numero + 1)
+
+    etape(1)
+
+
+def animer_boutons(widget):
+    """Tous les boutons de cette fenêtre : survol en fondu."""
+    for enfant in widget.winfo_children():
+        if isinstance(enfant, ctk.CTkButton):
+            animer_bouton(enfant)
+        animer_boutons(enfant)
+
+
+class Relief(ctk.CTkFrame):
+    """Un cadre en relief, creusé ou plat (`etat`, plus ou moins marqué selon `force`) : ses ombres sont une image
+    sous son contenu, refaite à sa taille. Un changement d'état se fait en fondu (quelques images intermédiaires).
+    Le contenu se met dans `.dedans` (assez loin des bords pour ne pas cacher les ombres)."""
+
+    DUREE = 150  # ms d'une transition
+    ETAPES = 8
+
+    def __init__(self, parent, etat="relief", rayon=14, marge=None, decalage=3, flou=4, interieur=None):
+        super().__init__(parent, fg_color="transparent", corner_radius=0)
+        if marge is None:
+            marge = decalage + 2 * flou  # (toute l'ombre tient dans la marge : jamais coupée net)
+        self.etat, self.force = etat, 1.0
+        self.rayon, self.marge, self.decalage, self.flou = rayon, marge, decalage, flou
+        # (Posée sous le contenu sans compter dans la taille du cadre : seul le contenu décide de la taille.)
+        self.fond = ctk.CTkLabel(self, text="", fg_color="transparent", width=1, height=1)
+        self.fond.place(x=0, y=0, relwidth=1, relheight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        # (Le contenu, rectangulaire, commence assez loin du bord pour ne pas déborder des coins arrondis : sinon il
+        # cache l'ombre dans les coins, qui paraissent carrés.)
+        retrait = marge + (rayon // 2 if interieur is None else max(interieur, -(-3 * rayon // 10)))
+        if etat == "creux":  # (le contenu commence après l'ombre intérieure : il ne la coupe pas en angle)
+            retrait = max(retrait, marge + decalage + round(1.2 * flou) + 1)
+        self.dedans = ctk.CTkFrame(self, fg_color=FOND, corner_radius=0)
+        self.dedans.grid(row=0, column=0, sticky="nsew", padx=retrait, pady=retrait)  # (créé après : au-dessus)
+        self._taille, self._images, self._animation = None, None, None
+        self.bind("<Configure>", lambda _e: self.redessiner())
+
+    def _images_de(self, etat, force):
+        """(image claire, image sombre) de cet état, à la taille actuelle ; None tant que la taille est inconnue."""
+        largeur, hauteur = self.winfo_width(), self.winfo_height()
+        if largeur < 4 or hauteur < 4:
+            return None
+        plates = [Image.new("RGBA", (largeur, hauteur), FOND[sombre]) for sombre in (False, True)]
+        if etat == "plat" or force <= 0:
+            return plates
+        echelle = self._get_widget_scaling()
+        images = [image_relief(largeur, hauteur, round(self.rayon * echelle), etat == "creux", sombre,
+                               round(self.marge * echelle), round(self.decalage * echelle),
+                               round(self.flou * echelle)) for sombre in (False, True)]
+        return images if force >= 1 else [Image.blend(p, i, force) for p, i in zip(plates, images)]
+
+    def _poser(self, images):
+        self._images = images
+        echelle = self._get_widget_scaling()
+        largeur, hauteur = images[0].size
+        self._image = ctk.CTkImage(images[0], images[1], size=(int(largeur / echelle), int(hauteur / echelle)))
+        self.fond.configure(image=self._image)
+
+    def changer(self, etat, force=1.0, anime=True):
+        """Passe à cet état (en fondu, sauf `anime=False`)."""
+        if (etat, force) == (self.etat, self.force):
+            return
+        self.etat, self.force = etat, force
+        if self._animation:
+            self.after_cancel(self._animation)
+            self._animation = None
+        cible = self._images_de(etat, force)
+        if cible is None:
+            return
+        depart = self._images
+        if not anime or depart is None or depart[0].size != cible[0].size:
+            self._poser(cible)
+            return
+
+        def etape(numero):
+            t = en_douceur(numero / self.ETAPES)
+            self._poser([Image.blend(d, c, t) for d, c in zip(depart, cible)])
+            self._animation = self.after(self.DUREE // self.ETAPES, etape, numero + 1) if numero < self.ETAPES else None
+
+        etape(1)
+
+    def redessiner(self):
+        taille = (self.winfo_width(), self.winfo_height())
+        if taille == self._taille or self._animation:
+            return
+        images = self._images_de(self.etat, self.force)
+        if images is not None:
+            self._taille = taille
+            self._poser(images)
+
+
+@functools.lru_cache(maxsize=64)
+def images_interrupteur(largeur, hauteur, sombre, echelle):
+    """(rail éteint, rail allumé, rond éteint, rond allumé) d'un interrupteur, en pixels réels. Le rond a un fond
+    transparent : son ombre se pose sur le rail, qu'il soit creux ou bleu."""
+    d, f = round(2 * echelle), round(2 * echelle)
+    rail = image_relief(largeur, hauteur, hauteur // 2, True, sombre, 1, d, f)
+    bleu = rail.copy()
+    masque = Image.new("L", (largeur * 2, hauteur * 2), 0)
+    ImageDraw.Draw(masque).rounded_rectangle((2, 2, largeur * 2 - 3, hauteur * 2 - 3), hauteur - 2, fill=235)
+    masque = masque.resize((largeur, hauteur), Image.LANCZOS)
+    bleu.paste(Image.new("RGBA", (largeur, hauteur), ("#2563EB", "#3B82F6")[sombre]), (0, 0), masque)
+    cote = hauteur - round(8 * echelle) + 2 * (d + 2 * f)  # le rond et la place de son ombre
+
+    def rond(couleur):
+        s = 2
+        image = Image.new("RGBA", (cote * s, cote * s), (0, 0, 0, 0))
+        m, r = (d + 2 * f) * s, (cote - 2 * (d + 2 * f)) * s
+        lumiere, ombre = OMBRES[sombre]
+        for teinte, dx in ((ombre, d * s), (lumiere, -d * s)):
+            calque = Image.new("RGBA", image.size, teinte[:3] + (0,))
+            ImageDraw.Draw(calque).ellipse((m + dx, m + dx, m + r + dx, m + r + dx), fill=teinte)
+            image.alpha_composite(calque.filter(ImageFilter.GaussianBlur(f * s)))
+        ImageDraw.Draw(image).ellipse((m, m, m + r, m + r), fill=couleur)
+        return image.resize((cote, cote), Image.LANCZOS)
+
+    return rail, bleu, rond(FOND[sombre]), rond("#FFFFFF")
+
+
+class InterrupteurRelief(tk.Canvas):
+    """Interrupteur comme celui de l'extension : rail creusé (bleu quand il est allumé), rond en relief qui glisse
+    avec un petit rebond. S'utilise comme un CTkSwitch : select, deselect, get, configure(state=…)."""
+
+    LARGEUR, HAUTEUR, DUREE = 52, 28, 280
+
+    def __init__(self, parent, commande=None):
+        self.echelle = parent._get_widget_scaling() if hasattr(parent, "_get_widget_scaling") else 1.0
+        self.l, self.h = round(self.LARGEUR * self.echelle), round(self.HAUTEUR * self.echelle)
+        super().__init__(parent, width=self.l, height=self.h, highlightthickness=0, bd=0, cursor="hand2")
+        self.commande, self.allume, self.actif = commande, False, True
+        self.avance = 0.0  # 0 : éteint ; 1 : allumé (le rond peut dépasser un peu pendant le rebond)
+        self._animation = None
+        self.bind("<Button-1>", self._clic)
+        ctk.AppearanceModeTracker.add(lambda _mode: self._dessiner(), self)
+        self._dessiner()
+
+    def _dessiner(self):
+        sombre = ctk.get_appearance_mode() == "Dark"
+        rail, bleu, rond, rond_blanc = images_interrupteur(self.l, self.h, sombre, round(self.echelle, 2))
+        melange = min(1.0, max(0.0, self.avance))
+        fond = Image.blend(rail, bleu, melange)
+        if not self.actif:
+            fond = Image.blend(fond, Image.new("RGBA", fond.size, FOND[sombre]), 0.55)
+        image = fond.copy()
+        bouton = Image.blend(rond, rond_blanc, melange)
+        marge = (bouton.width - (self.h - round(8 * self.echelle))) // 2
+        depart, course = round(4 * self.echelle) - marge, self.l - self.h
+        # (Le rond et son ombre débordent un peu du rail : posés sur un calque, qui accepte une position négative.)
+        calque = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        calque.paste(bouton, (depart + round(course * self.avance), (self.h - bouton.height) // 2))
+        image.alpha_composite(calque)
+        self.configure(bg=FOND[sombre])
+        self._image = ImageTk.PhotoImage(image)
+        self.delete("all")
+        self.create_image(0, 0, image=self._image, anchor="nw")
+
+    def _aller(self, allume, anime=True):
+        self.allume = allume
+        if self._animation:
+            self.after_cancel(self._animation)
+            self._animation = None
+        depart, arrivee = self.avance, 1.0 if allume else 0.0
+        if not anime or not self.winfo_ismapped():
+            self.avance = arrivee
+            self._dessiner()
+            return
+        etapes = 14
+
+        def rebond(x):  # (dépasse un peu, puis revient : comme l'extension)
+            return 1 + 2.2 * (x - 1) ** 3 + 1.2 * (x - 1) ** 2
+
+        def etape(numero):
+            self.avance = depart + (arrivee - depart) * rebond(numero / etapes)
+            self._dessiner()
+            self._animation = self.after(self.DUREE // etapes, etape, numero + 1) if numero < etapes else None
+
+        etape(1)
+
+    def _clic(self, _evenement):
+        if self.actif:
+            self._aller(not self.allume)
+            if self.commande:
+                self.commande()
+
+    def select(self):
+        if not self.allume:
+            self._aller(True)
+
+    def deselect(self):
+        if self.allume:
+            self._aller(False)
+
+    def get(self):
+        return 1 if self.allume else 0
+
+    def configure(self, cnf=None, **options):
+        if "state" in options:
+            self.actif = options.pop("state") != "disabled"
+            super().configure(cursor="hand2" if self.actif else "")
+            self._dessiner()
+        if cnf or options:
+            super().configure(cnf, **options)
+
+    config = configure
+
+
+class BoutonRelief(Relief):
+    """Un bouton en relief, qui s'enfonce quand on appuie. S'utilise comme un CTkButton (configure, cget)."""
+
+    def __init__(self, parent, texte, commande, largeur=0, accent=False, hauteur=30):
+        super().__init__(parent, rayon=12, decalage=2, flou=3, interieur=0)
+        self.bouton = ctk.CTkButton(
+            self.dedans, text=texte, width=largeur or 260, height=hauteur, command=commande, corner_radius=10,
+            border_width=0, font=ctk.CTkFont("Segoe UI", 12, "bold" if accent else "normal"),
+            fg_color=ACCENT if accent else FOND, hover_color=ACCENT_SURVOL if accent else ("#EDF1F6", "#2C3039"),
+            text_color="#FFFFFF" if accent else TEXTE)
+        self.bouton.pack(fill="x")
+        enfoncer(self, self.bouton)
+
+    def configure(self, require_redraw=False, **options):
+        if "bouton" not in self.__dict__:  # (pendant la construction du cadre lui-même)
+            return super().configure(require_redraw, **options)
+        self.bouton.configure(**options)
+
+    def cget(self, option):
+        return self.bouton.cget(option) if "bouton" in self.__dict__ else super().cget(option)
+
+
+def menu_relief(parent, valeurs, variable, commande, largeur=170, **options):
+    """Un menu déroulant en relief : (cadre en relief, menu)."""
+    relief = Relief(parent, rayon=12, decalage=2, flou=3, interieur=0)
+    menu = ctk.CTkOptionMenu(relief.dedans, values=valeurs, variable=variable, width=largeur, height=32,
+                             command=commande, corner_radius=10, font=ctk.CTkFont("Segoe UI", 13),
+                             dropdown_font=ctk.CTkFont("Segoe UI", 13), fg_color=FOND, button_color=FOND,
+                             button_hover_color=("#EDF1F6", "#2C3039"), text_color=TEXTE, **options)
+    menu.pack(fill="x")
+    return relief, menu
+
+
+def champ_creux(parent, **options):
+    """Un champ de saisie creusé : (cadre creusé, champ)."""
+    relief = Relief(parent, etat="creux", rayon=12, marge=2, decalage=2, flou=3, interieur=0)
+    champ = ctk.CTkEntry(relief.dedans, height=28, border_width=0, corner_radius=0, fg_color=FOND,
+                         font=ctk.CTkFont("Segoe UI", 12), **options)
+    champ.pack(fill="x")
+    return relief, champ
+
+
+class ChoixRelief(Relief):
+    """Plusieurs choix dans un rail creusé ; une pastille en relief marque le choix en cours et glisse jusqu'au
+    nouveau (remplace CTkSegmentedButton). Dessinés sur une toile : la pastille passe sous les textes."""
+
+    HAUTEUR = 34
+    DUREE = 220  # ms du glissement
+
+    def __init__(self, parent, valeurs, variable, commande):
+        super().__init__(parent, etat="creux", rayon=14, marge=4, decalage=2, flou=3, interieur=4)
+        self.variable, self.commande, self.valeurs = variable, commande, list(valeurs)
+        echelle = self._get_widget_scaling()
+        self.toile = tk.Canvas(self.dedans, height=round(self.HAUTEUR * echelle), highlightthickness=0, bd=0)
+        self.toile.pack(fill="x")
+        self.position = None  # x de la pastille (pixels réels) ; None : pas encore placée
+        self.survol = None  # indice du choix sous la souris
+        self._glissement = None
+        self._pastille = None
+        self.toile.bind("<Configure>", lambda _e: self._dessiner())
+        self.toile.bind("<Button-1>", self._clic)
+        self.toile.bind("<Motion>", self._bouger)
+        self.toile.bind("<Leave>", lambda _e: self._bouger(None))
+        variable.trace_add("write", lambda *_: self._aller())
+        ctk.AppearanceModeTracker.add(lambda _mode: self._dessiner(), self)
+
+    def _indice(self):
+        valeur = self.variable.get()
+        return self.valeurs.index(valeur) if valeur in self.valeurs else 0
+
+    def _case(self):
+        return max(1, self.toile.winfo_width()) / len(self.valeurs)
+
+    def _dessiner(self):
+        """Toute la toile : la pastille (à sa position) et les textes."""
+        toile, echelle = self.toile, self._get_widget_scaling()
+        largeur, hauteur = toile.winfo_width(), toile.winfo_height()
+        if largeur < 10:
+            return
+        sombre = ctk.get_appearance_mode() == "Dark"
+        toile.configure(bg=FOND[sombre])
+        toile.delete("all")
+        case = largeur / len(self.valeurs)
+        if self.position is None or not self._glissement:
+            self.position = self._indice() * case
+        decalage, flou = round(2 * echelle), round(2 * echelle)
+        marge = decalage + 2 * flou
+        image = image_relief(round(case), hauteur, round(11 * echelle), False, sombre, marge, decalage, flou)
+        self._pastille = ImageTk.PhotoImage(image)
+        toile.create_image(self.position, 0, image=self._pastille, anchor="nw", tags="pastille")
+        choisi = self._indice()
+        for i, valeur in enumerate(self.valeurs):
+            couleur = ACCENT if i == choisi else (TEXTE if i == self.survol else ("#7A8499", "#8C93A6"))
+            toile.create_text((i + 0.5) * case, hauteur / 2, text=valeur, fill=couleur[sombre] if isinstance(
+                couleur, tuple) else couleur, font=("Segoe UI", -round(12 * echelle), "bold" if i == choisi else "normal"))
+
+    def _aller(self):
+        """Le choix a changé : la pastille glisse jusqu'à lui (ralentit à la fin)."""
+        if self._glissement:
+            self.after_cancel(self._glissement)
+            self._glissement = None
+        depart, arrivee = self.position, self._indice() * self._case()
+        if depart is None or abs(depart - arrivee) < 1 or not self.toile.winfo_ismapped():
+            self.position = arrivee
+            self._dessiner()
+            return
+        etapes = 12
+
+        def etape(numero):
+            self.position = depart + (arrivee - depart) * en_douceur(numero / etapes)
+            self.toile.coords("pastille", self.position, 0)
+            if numero < etapes:
+                self._glissement = self.after(self.DUREE // etapes, etape, numero + 1)
+            else:
+                self._glissement = None
+                self._dessiner()
+
+        self._glissement = True
+        self._dessiner()  # (couleurs des textes : le nouveau choix en bleu tout de suite)
+        etape(1)
+
+    def _clic(self, evenement):
+        valeur = self.valeurs[min(len(self.valeurs) - 1, int(evenement.x // self._case()))]
+        if valeur != self.variable.get():
+            self.variable.set(valeur)
+            self.commande(valeur)
+
+    def _bouger(self, evenement):
+        survol = None if evenement is None else min(len(self.valeurs) - 1, int(evenement.x // self._case()))
+        if survol != self.survol:
+            self.survol = survol
+            self.toile.configure(cursor="hand2" if survol is not None and survol != self._indice() else "")
+            if not self._glissement:
+                self._dessiner()
+
+
 # --------------------------------------------------------------------------- fenêtre principale
 
 class Navigation:
     """Barre de navigation à gauche (une icône et un nom par rubrique), la rubrique choisie à droite.
     S'utilise comme les onglets de customtkinter : add(nom) -> page, get(), set(nom), tab(nom)."""
 
-    ICONES = {"Accueil": "", "Langues": "", "Écrire": "", "Historique": "", "Apparence": "",
-              "Où traduire": "", "Sites internet": "", "Options": ""}  # (police « Segoe MDL2 Assets »)
-    DESCRIPTIONS = {"Accueil": "Comment ça marche, en quelques secondes",
-                    "Langues": "Ta langue, celles à comprendre, et la qualité",
-                    "Écrire": "Écrire dans une autre langue, et tes mots",
-                    "Historique": "Les dernières traductions, à relire ou copier",
+    ICONES = {"Accueil": "", "Langues": "", "Apparence": "", "Plus": ""}  # (police « Segoe MDL2 Assets »)
+    DESCRIPTIONS = {"Accueil": "L'essentiel, en un coup d'œil",
+                    "Langues": "Ce que tu lis, ce que tu écris, et tes mots",
                     "Apparence": "L'allure des traductions",
-                    "Où traduire": "Toutes les fenêtres, ou seulement certaines",
-                    "Sites internet": "L'extension, pour des sites parfaitement traduits",
-                    "Options": "Démarrage, raccourcis clavier, rapidité"}
-    CHOISI = (ACCENT, ACCENT)
-    SURVOL = ("#E2E4EC", "#232533")
+                    "Plus": "Où traduire, sites internet, raccourcis, historique"}
+    GRIS = ("#7A8499", "#8C93A6")
+    REPOS = 0.55  # relief d'une rubrique au repos (plein au survol ; la rubrique choisie est creusée)
 
     def __init__(self, barre, zone, titre, description, commande=None):
         self.barre, self.zone, self.titre, self.description = barre, zone, titre, description
@@ -4775,18 +5599,18 @@ class Navigation:
 
     def add(self, nom):
         page = ctk.CTkFrame(self.zone, fg_color="transparent")
-        element = ctk.CTkFrame(self.barre, fg_color="transparent", corner_radius=8, height=38)
-        element.pack(fill="x", padx=10, pady=2)
-        element.pack_propagate(False)
-        icone = ctk.CTkLabel(element, text=self.ICONES.get(nom, ""), width=26,
+        element = Relief(self.barre, etat="creux", rayon=12, decalage=2, flou=3, interieur=3)
+        element.changer("relief", self.REPOS, anime=False)  # (marges d'un élément creusé : la rubrique choisie le devient sans bouger)
+        element.pack(fill="x", padx=8, pady=1)
+        icone = ctk.CTkLabel(element.dedans, text=self.ICONES.get(nom, ""), width=26,
                              font=ctk.CTkFont("Segoe MDL2 Assets", 15))
-        icone.pack(side="left", padx=(10, 6))
-        texte = ctk.CTkLabel(element, text=nom, font=ctk.CTkFont("Segoe UI", 13), anchor="w")
+        icone.pack(side="left", padx=(8, 6))
+        texte = ctk.CTkLabel(element.dedans, text=nom, font=ctk.CTkFont("Segoe UI", 13), anchor="w")
         texte.pack(side="left", fill="x", expand=True)
-        for morceau in (element, icone, texte):
+        morceaux = (element, element.fond, element.dedans, icone, texte)
+        for morceau in morceaux:
             morceau.bind("<Button-1>", lambda _e, n=nom: self._cliquer(n))
-            morceau.bind("<Enter>", lambda _e, n=nom: self._survoler(n, True))
-            morceau.bind("<Leave>", lambda _e, n=nom: self._survoler(n, False))
+        suivre_survol(element, morceaux, lambda n=nom: self._survoler(n, True), lambda n=nom: self._survoler(n, False))
         self.pages[nom], self.elements[nom] = page, (element, icone, texte)
         if self.actif is None:
             self.set(nom)
@@ -4799,21 +5623,76 @@ class Navigation:
 
     def _survoler(self, nom, dessus):
         if nom != self.actif:
-            self.elements[nom][0].configure(fg_color=self.SURVOL if dessus else "transparent")
+            element = self.elements[nom][0]
+            element.changer("relief", 1.0 if dessus else self.REPOS)
+            for etiquette in self.elements[nom][1:]:
+                etiquette.configure(text_color=TEXTE if dessus else self.GRIS)
 
     def set(self, nom):
-        if self.actif:
-            self.pages[self.actif].pack_forget()
+        precedent = self.actif
+        if precedent:
+            self.pages[precedent].pack_forget()
+            self.pages[precedent].place_forget()
         self.actif = nom
-        self.pages[nom].pack(fill="both", expand=True)
+        page = self.pages[nom]
+        page.pack(fill="both", expand=True)
         self.ajuster_hauteur()
         for autre, (element, icone, texte) in self.elements.items():
             choisi = autre == nom
-            element.configure(fg_color=self.CHOISI if choisi else "transparent")
+            element.changer("creux" if choisi else "relief", 1.0 if choisi else self.REPOS)
             for etiquette in (icone, texte):
-                etiquette.configure(text_color=("#FFFFFF", "#FFFFFF") if choisi else ("#30333F", "#C9CCD8"))
+                etiquette.configure(text_color=ACCENT if choisi else self.GRIS)
+            texte.configure(font=ctk.CTkFont("Segoe UI", 13, "bold" if choisi else "normal"))
         self.titre.configure(text=nom)
         self.description.configure(text=self.DESCRIPTIONS.get(nom, ""))
+        if precedent and precedent != nom and self.zone.winfo_ismapped():  # (après le titre : il est sur la photo)
+            self._glisser(1 if list(self.pages).index(nom) > list(self.pages).index(precedent) else -1)
+
+    def _glisser(self, sens, etapes=12, duree=220):
+        """Toute la carte de la rubrique (son relief, son titre, son contenu) arrive en glissant verticalement, comme
+        la liste des rubriques : d'en bas si sens = 1 (rubrique plus bas dans la liste), d'en haut si -1.
+        C'est une photo de la carte qui glisse, par-dessus un fond uni : une seule image à déplacer (déplacer la
+        vraie carte obligeait Tk à redessiner tous ses éléments à chaque image, à moitié dessinés). La vraie carte,
+        restée en place, réapparaît à la fin."""
+        carte = getattr(self, "carte", None)
+        if carte is None or not carte.winfo_ismapped():
+            return
+        self._fin_glissement()
+        racine = carte.winfo_toplevel()
+        try:
+            racine.update_idletasks()
+            carte.update()  # (la nouvelle rubrique dessinée, avant la photo)
+            x0, y0 = carte.winfo_rootx(), carte.winfo_rooty()
+            largeur, hauteur = carte.winfo_width(), carte.winfo_height()
+            photo = ImageTk.PhotoImage(ImageGrab.grab((x0, y0, x0 + largeur, y0 + hauteur), all_screens=True))
+        except Exception:  # (fenêtre hors de l'écran, capture impossible : pas d'animation)
+            return
+        fond = FOND[ctk.get_appearance_mode() == "Dark"]
+        x, y = carte.winfo_x(), carte.winfo_y()
+        masque = tk.Frame(racine, bg=fond, bd=0, highlightthickness=0)
+        masque.place(x=x, y=y, width=largeur, height=hauteur)
+        vue = tk.Label(racine, image=photo, bg=fond, bd=0, highlightthickness=0)
+        vue.image = photo
+        distance = round(40 * carte._get_widget_scaling()) * sens
+        self._vue = (masque, vue)
+
+        def etape(numero):
+            if numero <= etapes:
+                vue.place(x=x, y=y + round(distance * (1 - en_douceur(numero / etapes))), width=largeur, height=hauteur)
+                self._glissement = carte.after(duree // etapes, etape, numero + 1)
+            else:
+                self._fin_glissement()
+
+        etape(1)
+
+    def _fin_glissement(self):
+        """Arrête un glissement en cours : la photo et son fond disparaissent, la vraie carte se montre."""
+        if getattr(self, "_glissement", None):
+            self.carte.after_cancel(self._glissement)
+        self._glissement = None
+        for morceau in getattr(self, "_vue", ()):
+            morceau.destroy()
+        self._vue = ()
 
     def get(self):
         return self.actif
@@ -4869,7 +5748,7 @@ class SelecteurZone:
             return
         (_, (x, y)) = self.depart
         if self.rectangle is None:
-            self.rectangle = self.toile.create_rectangle(x, y, e.x, e.y, fill=self.TRANSPARENT, outline="#818CF8",
+            self.rectangle = self.toile.create_rectangle(x, y, e.x, e.y, fill=self.TRANSPARENT, outline="#60A5FA",
                                                          width=2)
         else:
             self.toile.coords(self.rectangle, x, y, e.x, e.y)
@@ -4890,11 +5769,11 @@ class SelecteurZone:
 
 
 class Reglages:
-    """Fenêtre principale : à gauche la navigation, à droite la traduction en direct et la rubrique
-    choisie (langue, écrire, apparence, programmes, navigateur, général)."""
+    """Fenêtre principale : à gauche la navigation, à droite la rubrique choisie. Quatre rubriques : l'accueil
+    (marche / pause, langues, qualité, raccourcis), les langues, l'apparence, et « Plus » (le reste)."""
 
-    GRIS = ("#6B7080", "#9AA0B4")
-    CARTE = ("#F3F4F8", "#1C1E2A")
+    GRIS = ("#7A8499", "#8C93A6")
+    CARTE = FOND
 
     def __init__(self, root, app):
         self.app = app
@@ -4902,18 +5781,22 @@ class Reglages:
         root.title("Traducteur d'écran")
         root.resizable(False, False)
         root.protocol("WM_DELETE_WINDOW", self.cacher)
-        root.configure(fg_color=("#FFFFFF", "#12131A"))
+        root.configure(fg_color=FOND)
+        teindre_cadre(root)
         try:
             root.iconbitmap(ICONE_PATH)
         except tk.TclError:
             pass
 
-        # À gauche : le logo, la navigation, les raccourcis et « Quitter ».
-        barre = ctk.CTkFrame(root, width=212, corner_radius=0, fg_color=("#F3F4F8", "#171822"))
-        barre.pack(side="left", fill="y")
+        # Deux grandes cartes en relief : à gauche le logo, la navigation, les raccourcis et « Quitter » ; à droite
+        # la rubrique choisie.
+        carte_barre = Relief(root, rayon=22, decalage=4, flou=6)
+        carte_barre.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        barre = ctk.CTkFrame(carte_barre.dedans, width=196, corner_radius=0, fg_color=FOND)
+        barre.pack(fill="y", expand=True)
         barre.pack_propagate(False)
         entete = ctk.CTkFrame(barre, fg_color="transparent")
-        entete.pack(fill="x", padx=16, pady=(20, 18))
+        entete.pack(fill="x", padx=8, pady=(2, 14))
         self.logo = ctk.CTkImage(dessiner_icone(128), size=(38, 38))
         ctk.CTkLabel(entete, image=self.logo, text="").pack(side="left")
         titres = ctk.CTkFrame(entete, fg_color="transparent")
@@ -4922,47 +5805,33 @@ class Reglages:
         ctk.CTkLabel(titres, text="d'écran", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
                      anchor="w").pack(fill="x")
         pied = ctk.CTkFrame(barre, fg_color="transparent")
-        pied.pack(side="bottom", fill="x", padx=16, pady=(0, 18))
+        pied.pack(side="bottom", fill="x", padx=8, pady=(0, 2))
         self.aide = ctk.CTkLabel(pied, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 11),
                                  justify="left", anchor="w", wraplength=176)
         self.aide.pack(fill="x", pady=(0, 10))
         self._bouton_discret(pied, "Quitter le traducteur", app.quitter, 180).pack(fill="x")
 
-        # À droite : la traduction en direct, puis la rubrique choisie.
-        corps = ctk.CTkFrame(root, fg_color="transparent")
-        corps.pack(side="left", fill="both", expand=True, padx=26, pady=(20, 22))
-
-        # Carte : activation
-        carte = self._carte(corps)
-        carte.pack_configure(pady=(0, 0))
-        ligne = ctk.CTkFrame(carte, fg_color="transparent")
-        ligne.pack(fill="x", padx=18, pady=(16, 2))
-        ctk.CTkLabel(ligne, text="Traduction en direct", font=ctk.CTkFont("Segoe UI", 15, "bold")).pack(side="left")
-        self.interrupteur = ctk.CTkSwitch(ligne, text="", command=app.basculer, width=52,
-                                          switch_width=46, switch_height=24, progress_color=ACCENT)
-        self.interrupteur.pack(side="right")
-        self.etat = ctk.CTkLabel(carte, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
-        self.etat.pack(fill="x", padx=18, pady=(0, 14))
-
-        # La rubrique choisie : son titre, puis son contenu.
+        # À droite : la rubrique choisie, son titre puis son contenu.
+        carte_corps = Relief(root, rayon=22, decalage=4, flou=6)
+        carte_corps.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=8)
+        corps = ctk.CTkFrame(carte_corps.dedans, fg_color="transparent")
+        corps.pack(fill="both", expand=True, padx=8, pady=(2, 4))
         titre = ctk.CTkLabel(corps, text="", font=ctk.CTkFont("Segoe UI", 19, "bold"), anchor="w")
-        titre.pack(fill="x", pady=(18, 0))
+        titre.pack(fill="x")
         description = ctk.CTkLabel(corps, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
         description.pack(fill="x")
-        zone = ctk.CTkFrame(corps, width=440, height=372, fg_color="transparent")
-        zone.pack(fill="both", expand=True, pady=(8, 0))
+        zone = ctk.CTkFrame(corps, width=460, height=470, fg_color="transparent")
+        zone.pack(fill="both", expand=True, pady=(10, 0))
         zone.pack_propagate(False)
         onglets = Navigation(barre, zone, titre, description, self._onglet_change)
+        onglets.carte = carte_corps  # (c'est elle qui glisse quand on change de rubrique)
         self.onglets = onglets
         self._onglet_accueil(onglets.add("Accueil"))
         self._onglet_langue(onglets.add("Langues"))
-        self._onglet_ecrire(onglets.add("Écrire"))
-        self._onglet_historique(onglets.add("Historique"))
         self._onglet_apparence(onglets.add("Apparence"))
-        self._onglet_programmes(onglets.add("Où traduire"))
-        self._onglet_navigateur(onglets.add("Sites internet"))
-        self._onglet_general(onglets.add("Options"))
+        self._onglet_plus(onglets.add("Plus"))
         self.rafraichir()
+        animer_boutons(root)
 
     # ---- onglets
 
@@ -4970,12 +5839,8 @@ class Reglages:
         app = self.app
         self._titre(onglet, "Je lis en", 4)
         self.langue = ctk.StringVar()
-        ctk.CTkOptionMenu(
-            onglet, values=list(LANGUES), variable=self.langue, height=36,
-            font=ctk.CTkFont("Segoe UI", 14), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color="#4F46E5", button_hover_color="#4338CA",
-            command=lambda nom: app.choisir_langue(LANGUES[nom]),
-        ).pack(fill="x", padx=6, pady=(6, 0))
+        menu_relief(onglet, list(LANGUES), self.langue, lambda nom: app.choisir_langue(LANGUES[nom]),
+                    largeur=400)[0].pack(fill="x", pady=(2, 0))
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
         ligne.pack(fill="x", padx=6, pady=(14, 0))
         textes = ctk.CTkFrame(ligne, fg_color="transparent")
@@ -4991,87 +5856,95 @@ class Reglages:
         self.etat_langues = ctk.CTkLabel(ligne, text="", font=ctk.CTkFont("Segoe UI", 12), anchor="w",
                                          justify="left", wraplength=290)
         self.etat_langues.pack(side="left", fill="x", expand=True)
-        self.action_langues = ctk.CTkButton(ligne, text="", width=90, height=26, font=ctk.CTkFont("Segoe UI", 12),
-                                            fg_color=ACCENT, hover_color="#4F46E5")
+        self.action_langues = BoutonRelief(ligne, "", None, 90, accent=True, hauteur=26)
         self._ligne_etat_langues = ligne
         self.barre_langues = ctk.CTkProgressBar(onglet, height=6, progress_color=ACCENT)  # pendant un téléchargement
         self._langues_affichees = None
         self._note(onglet, "Seules ces langues sont traduites, hors ligne, sur ton PC. Jamais traduits : les "
                            "pseudos, les nombres, le code, le texte des images et des vidéos.")
-        # Qualité des traductions : chaque moyen s'active ou se coupe ici.
-        self._titre(onglet, "Qualité des traductions", 16)
-        self.carte_graphique, self.detail_carte = self._interrupteur(
-            onglet, "Carte graphique NVIDIA", "", lambda: self.app.choisir_carte_graphique(self.carte_graphique.get() == 1),
-            haut=6, avec_detail=True)
-        self.grand_modele, self.detail_grand_modele = self._interrupteur(
-            onglet, "Grand modèle de traduction", "",
-            lambda: self.app.choisir_grand_modele(self.grand_modele.get() == 1), haut=10, avec_detail=True)
-        self.ia_locale, self.detail_ia = self._interrupteur(
-            onglet, "IA locale (qualité maximale)", "", lambda: self.app.choisir_ia(self.ia_locale.get() == 1),
-            haut=10, avec_detail=True)
+        self._onglet_ecrire(onglet)
 
     def _onglet_accueil(self, onglet):
-        """Pour la première fois : ce qui est traduit vers quoi, puis comment ça marche, en quatre cartes."""
-        raccourci = self.app.config["raccourci"]
+        """L'essentiel sur une page : marche / pause, les langues, la qualité, les raccourcis, l'extension."""
+        app = self.app
         # Nouvelle version disponible (cachée tant qu'il n'y en a pas : voir montrer_mise_a_jour).
-        self.carte_maj = ctk.CTkFrame(onglet, corner_radius=12, fg_color=(ACCENT, ACCENT))
-        self.texte_maj = ctk.CTkLabel(self.carte_maj, text="", text_color="#FFFFFF", anchor="w",
+        self.carte_maj = Relief(onglet, rayon=16)
+        self.texte_maj = ctk.CTkLabel(self.carte_maj.dedans, text="", text_color=ACCENT, anchor="w",
                                       font=ctk.CTkFont("Segoe UI", 13, "bold"))
-        self.texte_maj.pack(side="left", fill="x", expand=True, padx=(14, 6), pady=8)
-        ctk.CTkButton(self.carte_maj, text="Mettre à jour", width=120, height=28, fg_color="#FFFFFF",
-                      text_color=ACCENT, hover_color="#E0E7FF", font=ctk.CTkFont("Segoe UI", 12, "bold"),
-                      command=lambda: self.app.commandes.put(("installer_mise_a_jour",))).pack(side="right", padx=(0, 10))
+        self.texte_maj.pack(side="left", fill="x", expand=True, padx=(4, 6))
+        BoutonRelief(self.carte_maj.dedans, "Mettre à jour", lambda: self.app.commandes.put(("installer_mise_a_jour",)),
+                     120, accent=True).pack(side="right")
+        # Marche / pause, en grand.
+        carte = self.carte_marche = Relief(onglet, rayon=18)
+        carte.pack(fill="x", pady=(0, 4))
+        ligne = ctk.CTkFrame(carte.dedans, fg_color="transparent")
+        ligne.pack(fill="x", padx=8, pady=4)
+        textes = ctk.CTkFrame(ligne, fg_color="transparent")
+        textes.pack(side="left", fill="x", expand=True)
+        self.titre_marche = ctk.CTkLabel(textes, text="", font=ctk.CTkFont("Segoe UI", 16, "bold"), anchor="w")
+        self.titre_marche.pack(fill="x")
+        self.etat = ctk.CTkLabel(textes, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
+        self.etat.pack(fill="x")
+        self.interrupteur = InterrupteurRelief(ligne, app.basculer)
+        self.interrupteur.pack(side="right")
         # Les langues en un coup d'œil : « Anglais, Japonais  →  Français ».
-        bandeau = self.bandeau_langues = ctk.CTkFrame(onglet, corner_radius=12, fg_color=self.CARTE)
-        bandeau.pack(fill="x", padx=6, pady=(0, 8))
-        self.resume_langues = ctk.CTkLabel(bandeau, text="", font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w",
-                                           justify="left", wraplength=320)
-        self.resume_langues.pack(side="left", fill="x", expand=True, padx=(14, 6), pady=8)
-        self._bouton_discret(bandeau, "Modifier", lambda: self.onglets.set("Langues"), 84).pack(side="right",
-                                                                                                padx=(0, 10))
-        self._carte_aide(onglet, "", "Ton écran est traduit tout seul",
-                         "Le texte dans une autre langue est remplacé par sa traduction, directement par-dessus. "
-                         "Rien à faire : laisse le programme ouvert.")
+        bandeau = self.bandeau_langues = ctk.CTkFrame(onglet, fg_color="transparent")
+        bandeau.pack(fill="x", padx=6, pady=(0, 6))
+        self.resume_langues = ctk.CTkLabel(bandeau, text="", font=ctk.CTkFont("Segoe UI", 14), anchor="w",
+                                           justify="left", wraplength=340)
+        self.resume_langues.pack(side="left", fill="x", expand=True, padx=(6, 6))
+        changer = Relief(bandeau, rayon=12, decalage=2, flou=3, interieur=0)
+        changer.pack(side="right")
+        bouton = ctk.CTkButton(changer.dedans, text="Changer", width=84, height=28,
+                               command=lambda: self.onglets.set("Langues"), **STYLE_BOUTON)
+        bouton.pack()
+        enfoncer(changer, bouton)
+        # La qualité, en un seul choix (voir Application.choisir_qualite).
+        ctk.CTkLabel(onglet, text="Qualité", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
+                     anchor="w").pack(fill="x", padx=10)
+        self.qualite = ctk.StringVar()
+        self._choix(onglet, NIVEAUX_QUALITE.values(), self.qualite,
+                    lambda v: app.choisir_qualite(next(c for c, nom in NIVEAUX_QUALITE.items() if nom == v)))
+        self.detail_qualite = ctk.CTkLabel(onglet, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
+                                           anchor="w", justify="left", wraplength=430)
+        self.detail_qualite.pack(fill="x", padx=10, pady=(2, 8))
+        # Les trois raccourcis, en tuiles.
+        tuiles = ctk.CTkFrame(onglet, fg_color="transparent")
+        tuiles.pack(fill="x", pady=(0, 4))
+        self.tuiles_raccourcis = {}  # action -> étiquette de la combinaison
         self._raccourcis_affiches = None  # (redessinés avec les raccourcis choisis par rafraichir)
-        self.touches_pause = self._carte_aide(onglet, "", "Mettre en pause ou reprendre",
-                                              "Quand tu veux voir le texte d'origine.",
-                                              touches=noms_des_touches(raccourci))
-        self.touches_ecrire_accueil = self._carte_aide(
-            onglet, "", "Écrire dans une autre langue",
-            "Écris ton message en français, puis ces touches : il est traduit, prêt à envoyer.",
-            touches=noms_des_touches(self.app.config[RACCOURCIS["ecrire"][0]]))
-        self._carte_aide(onglet, "", "Sites internet : installe l'extension",
-                         "Les sites sont alors traduits directement dans la page.",
-                         bouton=("Installer", lambda: self.onglets.set("Sites internet")))
+        for colonne, (action, role) in enumerate((("pause", "Pause"), ("zone", "Traduire une zone"),
+                                                   ("ecrire", "Écrire traduit"))):
+            tuiles.grid_columnconfigure(colonne, weight=1, uniform="tuile")
+            tuile = Relief(tuiles, rayon=16)
+            tuile.grid(row=0, column=colonne, sticky="ew")
+            ctk.CTkLabel(tuile.dedans, text=role, text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 11), height=18,
+                         anchor="w").pack(fill="x", padx=4)
+            touches = ctk.CTkLabel(tuile.dedans, text="", font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w",
+                                   height=22)
+            touches.pack(fill="x", padx=4)
+            self.tuiles_raccourcis[action] = touches
+        # Les sites internet : l'extension.
+        relief = Relief(onglet, rayon=16)
+        relief.pack(fill="x")
+        carte = relief.dedans
+        ctk.CTkLabel(carte, text="", width=30, font=ctk.CTkFont("Segoe MDL2 Assets", 17),
+                     text_color=self.GRIS).pack(side="left", padx=(2, 6))
+        textes = ctk.CTkFrame(carte, fg_color="transparent")
+        textes.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(textes, text="Sites internet", font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(fill="x")
+        self.etat_extension_accueil = ctk.CTkLabel(textes, text="", text_color=self.GRIS, anchor="w",
+                                                   font=ctk.CTkFont("Segoe UI", 12))
+        self.etat_extension_accueil.pack(fill="x")
+        self.bouton_extension = BoutonRelief(carte, "Installer", lambda: self.onglets.set("Plus"), 84, accent=True)
+        self.bouton_extension.pack(side="right", padx=4)
 
     def montrer_mise_a_jour(self, version):
         """Une nouvelle version est publiée : la carte « Mettre à jour » apparaît en haut de l'accueil."""
         self.texte_maj.configure(text=f"Nouvelle version {version} disponible")
         if not self.carte_maj.winfo_ismapped():
-            self.carte_maj.pack(fill="x", padx=6, pady=(0, 8), before=self.bandeau_langues)
+            self.carte_maj.pack(fill="x", padx=6, pady=(0, 8), before=self.carte_marche)
         self.onglets.ajuster_hauteur()
-
-    def _carte_aide(self, parent, icone, titre, texte, touches=None, bouton=None):
-        """Une carte de l'accueil : icône, titre, explication, et des touches ou un bouton."""
-        carte = ctk.CTkFrame(parent, corner_radius=12, fg_color=self.CARTE)
-        carte.pack(fill="x", padx=6, pady=(0, 8))
-        ctk.CTkLabel(carte, text=icone, width=34, font=ctk.CTkFont("Segoe MDL2 Assets", 18),
-                     text_color=ACCENT).pack(side="left", padx=(12, 6), pady=10, anchor="n")
-        droite = ctk.CTkFrame(carte, fg_color="transparent")
-        droite.pack(side="left", fill="both", expand=True, pady=8, padx=(0, 12))
-        haut = ctk.CTkFrame(droite, fg_color="transparent")
-        haut.pack(fill="x")
-        ctk.CTkLabel(haut, text=titre, font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(side="left")
-        rangee = None
-        if touches:
-            rangee = self._touches(haut, touches)
-            rangee.pack(side="right")
-        if bouton:
-            ctk.CTkButton(haut, text=bouton[0], width=84, height=26, fg_color=ACCENT, hover_color="#4F46E5",
-                          font=ctk.CTkFont("Segoe UI", 12), command=bouton[1]).pack(side="right")
-        ctk.CTkLabel(droite, text=texte, text_color=self.GRIS, anchor="w", justify="left", wraplength=360,
-                     font=ctk.CTkFont("Segoe UI", 12)).pack(fill="x")
-        return rangee
 
     def _touches(self, parent, touches):
         """Une combinaison dessinée comme des touches de clavier : [Ctrl] + [Alt] + [T]."""
@@ -5086,46 +5959,38 @@ class Reglages:
             if i:
                 ctk.CTkLabel(rangee, text="+", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 11)).pack(side="left", padx=3)
             ctk.CTkLabel(rangee, text=touche, font=ctk.CTkFont("Segoe UI", 11, "bold"), corner_radius=6, height=22,
-                         fg_color=("#FFFFFF", "#2A2C3A"), padx=8).pack(side="left")
+                         fg_color=FOND_CREUX, padx=8).pack(side="left")
 
     def _onglet_ecrire(self, onglet):
+        """« J'écris en » (le message traduit par Ctrl+Alt+Entrée) et « Mes mots », dans la rubrique « Langues »."""
         app = self.app
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
-        ligne.pack(fill="x", padx=6, pady=(4, 0))
+        ligne.pack(fill="x", padx=6, pady=(16, 0))
         ctk.CTkLabel(ligne, text="J'écris en", font=ctk.CTkFont("Segoe UI", 13, "bold")).pack(side="left")
         self.langue_ecriture = ctk.StringVar()
-        ctk.CTkOptionMenu(
-            ligne, values=list(LANGUES), variable=self.langue_ecriture, width=170, height=30,
-            font=ctk.CTkFont("Segoe UI", 13), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color="#4F46E5", button_hover_color="#4338CA",
-            command=lambda nom: app.choisir_langue_ecriture(LANGUES[nom])).pack(side="right")
-        # Le raccourci, dessiné comme des touches de clavier.
-        carte = ctk.CTkFrame(onglet, corner_radius=10, fg_color=self.CARTE)
-        carte.pack(fill="x", padx=6, pady=(10, 0))
-        self.touches_ecrire_page = self._touches(carte, noms_des_touches(app.config[RACCOURCIS["ecrire"][0]]))
-        self.touches_ecrire_page.pack(anchor="w", padx=12, pady=(10, 4))
-        ctk.CTkLabel(carte, text="Écris ton message dans n'importe quelle zone de texte, puis appuie sur ces touches : "
-                                 "il est remplacé par sa traduction, prête à envoyer.", text_color=self.GRIS, anchor="w",
-                     justify="left", wraplength=400, font=ctk.CTkFont("Segoe UI", 12)).pack(fill="x", padx=12, pady=(0, 10))
+        menu_relief(ligne, list(LANGUES), self.langue_ecriture,
+                    lambda nom: app.choisir_langue_ecriture(LANGUES[nom]))[0].pack(side="right")
+        self.note_ecrire = ctk.CTkLabel(onglet, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
+                                        anchor="w", justify="left", wraplength=430)
+        self.note_ecrire.pack(fill="x", padx=6, pady=(6, 0))
 
         # « Mes mots » : ajouter un mot (et sa traduction, si on veut l'imposer), voir et retirer les siens.
         self._titre(onglet, "Mes mots", 14)
         ajout = ctk.CTkFrame(onglet, fg_color="transparent")
         ajout.pack(fill="x", padx=6, pady=(6, 0))
-        style = dict(height=32, font=ctk.CTkFont("Segoe UI", 12), border_width=1, border_color=("#D0D3DE", "#3A3D4E"),
-                     fg_color=("#FFFFFF", "#15161F"))
-        self.nouveau_mot = ctk.CTkEntry(ajout, width=130, placeholder_text="Mot ou nom", **style)
-        self.nouveau_mot.pack(side="left")
-        self.nouvelle_traduction = ctk.CTkEntry(ajout, placeholder_text="Sa traduction (vide : jamais traduit)", **style)
-        self.nouvelle_traduction.pack(side="left", fill="x", expand=True, padx=(6, 6))
-        ctk.CTkButton(ajout, text="Ajouter", width=76, height=32, fg_color=ACCENT, hover_color="#4F46E5",
-                      command=self._ajouter_mot).pack(side="right")
+        relief, self.nouveau_mot = champ_creux(ajout, width=120, placeholder_text="Mot ou nom")
+        relief.pack(side="left")
+        relief, self.nouvelle_traduction = champ_creux(ajout, placeholder_text="Sa traduction (vide : jamais traduit)")
+        relief.pack(side="left", fill="x", expand=True, padx=(6, 4))
+        BoutonRelief(ajout, "Ajouter", self._ajouter_mot, 76, accent=True).pack(side="right")
         for champ in (self.nouveau_mot, self.nouvelle_traduction):
             champ.bind("<Return>", lambda _e: self._ajouter_mot())
         # (Petite hauteur demandée : la liste s'étire sur la place libre, sans agrandir la fenêtre.)
-        self.liste_mots = ctk.CTkScrollableFrame(onglet, height=60, corner_radius=10, fg_color=("#FFFFFF", "#15161F"))
+        cadre = Relief(onglet, etat="creux", rayon=14, marge=2, decalage=3, flou=4, interieur=0)
+        cadre.pack(fill="both", expand=True, pady=(6, 0))
+        self.liste_mots = ctk.CTkScrollableFrame(cadre.dedans, height=60, corner_radius=0, fg_color=FOND)
         self.liste_mots._scrollbar.configure(height=60)  # (sinon sa barre de défilement demande 200 px)
-        self.liste_mots.pack(fill="both", expand=True, padx=6, pady=(8, 0))
+        self.liste_mots.pack(fill="both", expand=True)
         self._mots_affiches = None
 
     @staticmethod
@@ -5175,19 +6040,28 @@ class Reglages:
                           fg_color="transparent", hover_color=("#ECEDF2", "#2A2C3A"), text_color=self.GRIS,
                           command=lambda l=ligne: self._retirer_mot(l)).pack(side="right")
 
+    def _onglet_plus(self, onglet):
+        """Tout le reste, en sections, sur une page qui défile."""
+        page = self.page_plus = ctk.CTkScrollableFrame(onglet, height=462, fg_color="transparent")
+        page.pack(fill="both", expand=True)
+        for titre, construire in (("Où traduire", self._onglet_programmes), ("Sites internet", self._onglet_navigateur),
+                                  ("Raccourcis et démarrage", self._onglet_general), ("Historique", self._onglet_historique)):
+            ctk.CTkLabel(page, text=titre, font=ctk.CTkFont("Segoe UI", 15, "bold"), anchor="w").pack(
+                fill="x", padx=6, pady=(4 if titre == "Où traduire" else 24, 0))
+            construire(page)
+
     def _onglet_historique(self, onglet):
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
         ligne.pack(fill="x", padx=6, pady=(4, 0))
         ctk.CTkLabel(ligne, text="Gardé seulement tant que le programme tourne, jamais enregistré.", anchor="w",
                      text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12)).pack(side="left")
         self._bouton_discret(ligne, "Effacer", self._effacer_historique, 76).pack(side="right")
-        self.liste_historique = ctk.CTkScrollableFrame(onglet, height=60, corner_radius=10,
-                                                       fg_color=("#FFFFFF", "#15161F"))
-        self.liste_historique._scrollbar.configure(height=60)
-        self.liste_historique.pack(fill="both", expand=True, padx=6, pady=(8, 0))
+        cadre = Relief(onglet, etat="creux", rayon=14, marge=2, decalage=3, flou=4, interieur=0)
+        cadre.pack(fill="x", pady=(6, 0))
+        self.liste_historique = cadre.dedans
         self._historique_affiche = None
 
-    HISTORIQUE_AFFICHE = 60  # lignes au plus (les plus récentes) : la fenêtre reste rapide
+    HISTORIQUE_AFFICHE = 10  # lignes au plus (les plus récentes) : la page reste courte et rapide
 
     def afficher_historique(self):
         historique = list(self.app.historique)[-self.HISTORIQUE_AFFICHE:]
@@ -5226,7 +6100,11 @@ class Reglages:
 
     def _onglet_apparence(self, onglet):
         app = self.app
-        self._titre(onglet, "Couleur des traductions", 4)
+        self._titre(onglet, "Thème de la fenêtre", 4)
+        self.theme = ctk.StringVar()
+        self._choix(onglet, [nom for nom, _ in THEMES.values()], self.theme,
+                    lambda v: app.choisir_theme(next(c for c, (nom, _) in THEMES.items() if nom == v)))
+        self._titre(onglet, "Couleur des traductions")
         self.style = ctk.StringVar()
         self._choix(onglet, NOMS_STYLES.values(), self.style,
                     lambda v: app.choisir_style(next(c for c, nom in NOMS_STYLES.items() if nom == v)))
@@ -5240,7 +6118,7 @@ class Reglages:
         self.valeur_opacite = ctk.CTkLabel(ligne, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12))
         self.valeur_opacite.pack(side="right")
         self.opacite = ctk.CTkSlider(onglet, from_=40, to=100, number_of_steps=12, command=self._changer_opacite,
-                                     progress_color=ACCENT, button_color=ACCENT, button_hover_color="#4F46E5")
+                                     progress_color=ACCENT, button_color=ACCENT, button_hover_color=ACCENT_SURVOL)
         self.opacite.pack(fill="x", padx=6, pady=(6, 0))
         self.fondu = self._interrupteur(onglet, "Apparition en douceur", "Les traductions apparaissent en fondu",
                                         lambda: app.choisir_fondu(self.fondu.get() == 1))
@@ -5263,15 +6141,15 @@ class Reglages:
 
     def _etape(self, parent, numero, texte, bouton=None, commande=None):
         """Une étape numérotée (rond de couleur), avec son bouton s'il y a quelque chose à faire."""
-        ligne = ctk.CTkFrame(parent, corner_radius=10, fg_color=self.CARTE)
-        ligne.pack(fill="x", padx=6, pady=(6, 0))
+        relief = Relief(parent, rayon=14, decalage=2, flou=3)
+        relief.pack(fill="x", pady=(2, 0))
+        ligne = relief.dedans
         ctk.CTkLabel(ligne, text=str(numero), width=24, height=24, corner_radius=12, fg_color=ACCENT,
-                     text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 12, "bold")).pack(side="left", padx=(10, 10), pady=8)
+                     text_color="#FFFFFF", font=ctk.CTkFont("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 10))
         if bouton:
-            ctk.CTkButton(ligne, text=bouton, width=92, height=28, fg_color=ACCENT, hover_color="#4F46E5",
-                          font=ctk.CTkFont("Segoe UI", 12), command=commande).pack(side="right", padx=(6, 10))
+            BoutonRelief(ligne, bouton, commande, 92, accent=True).pack(side="right", padx=(6, 0))
         ctk.CTkLabel(ligne, text=texte, anchor="w", justify="left", wraplength=255 if bouton else 355,
-                     font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", fill="x", expand=True, pady=6)
+                     font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", fill="x", expand=True)
 
     def _ouvrir_dossier_extension(self):
         dossier = dossier_extension()
@@ -5287,25 +6165,26 @@ class Reglages:
             self.info_extension.configure(text="Dossier introuvable : " + dossier)
 
     def _onglet_programmes(self, onglet):
+        """Une seule carte en relief : le choix (tous sauf / seulement la liste), la ligne pour ajouter un programme,
+        et les programmes choisis dans leur creux."""
         app = self.app
-        self._titre(onglet, "Programmes à traduire", 4)
+        carte = Relief(onglet, rayon=18)
+        carte.pack(fill="x", pady=(2, 0))
+        onglet = carte.dedans
         self.mode_programmes = ctk.StringVar()
         self._choix(onglet, MODES_PROGRAMMES.values(), self.mode_programmes,
                     lambda v: app.choisir_mode_programmes(next(c for c, nom in MODES_PROGRAMMES.items() if nom == v)))
         ligne = ctk.CTkFrame(onglet, fg_color="transparent")
-        ligne.pack(fill="x", padx=6, pady=(8, 0))
+        ligne.pack(fill="x", pady=(6, 0))
         self.a_ajouter = ctk.StringVar(value=self.CHOISIR)
-        self.menu_programmes = ctk.CTkOptionMenu(
-            ligne, values=[self.CHOISIR], variable=self.a_ajouter, height=32, dynamic_resizing=False,
-            font=ctk.CTkFont("Segoe UI", 13), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=("#FFFFFF", "#2A2C3A"), button_color=("#E2E4EC", "#33364A"),
-            button_hover_color=("#D5D8E3", "#3D4057"), text_color=("#30333F", "#E4E6EE"))
-        self.menu_programmes.pack(side="left", fill="x", expand=True)
-        self._bouton_discret(ligne, "Parcourir…", self._parcourir, 92).pack(side="right", padx=(6, 0))
-        ctk.CTkButton(ligne, text="Ajouter", width=76, height=32, command=self._ajouter_programme,
-                      fg_color=ACCENT, hover_color="#4F46E5").pack(side="right", padx=(6, 0))
-        self.liste_programmes = ctk.CTkFrame(onglet, corner_radius=10, fg_color=("#FFFFFF", "#15161F"))
-        self.liste_programmes.pack(fill="x", padx=6, pady=(8, 0))
+        relief, self.menu_programmes = menu_relief(ligne, [self.CHOISIR], self.a_ajouter, None, largeur=150,
+                                                   dynamic_resizing=False)
+        relief.pack(side="left", fill="x", expand=True)
+        self._bouton_discret(ligne, "Parcourir…", self._parcourir, 88).pack(side="right", padx=(4, 0))
+        BoutonRelief(ligne, "Ajouter", self._ajouter_programme, 70, accent=True).pack(side="right", padx=(4, 0))
+        cadre = Relief(onglet, etat="creux", rayon=14, marge=2, decalage=3, flou=4, interieur=0)
+        cadre.pack(fill="x", pady=(6, 0))
+        self.liste_programmes = cadre.dedans
         self._liste_affichee = None
 
     def _onglet_general(self, onglet):
@@ -5313,8 +6192,9 @@ class Reglages:
                                             "Démarre discrètement, près de l'horloge", self._changer_demarrage, 4)
         # Tous les raccourcis, dessinés comme des touches, chacun avec son bouton « Changer ».
         self._titre(onglet, "Raccourcis clavier", 14)
-        carte = ctk.CTkFrame(onglet, corner_radius=10, fg_color=self.CARTE)
-        carte.pack(fill="x", padx=6, pady=(6, 0))
+        relief = Relief(onglet, rayon=14)
+        relief.pack(fill="x", pady=(2, 0))
+        carte = relief.dedans
         carte.grid_columnconfigure(1, weight=1)
         self.lignes_raccourcis = {}  # action -> (touches dessinées, rôle, bouton « Changer »)
         for i, (action, (cle, _, role)) in enumerate(RACCOURCIS.items()):
@@ -5345,14 +6225,9 @@ class Reglages:
         ctk.CTkLabel(ligne, text="sur GitHub", text_color=self.GRIS,
                      font=ctk.CTkFont("Segoe UI", 12)).pack(side="left", padx=(10, 0))
 
-    def _carte(self, parent):
-        carte = ctk.CTkFrame(parent, fg_color=self.CARTE, corner_radius=14)
-        carte.pack(fill="x", pady=(16, 0))
-        return carte
-
     # ---- éléments de la fenêtre
 
-    CHOISIR = "Choisir un programme ouvert…"
+    CHOISIR = "Choisir un programme…"
 
     def _titre(self, parent, texte, haut=12):
         ctk.CTkLabel(parent, text=texte, font=ctk.CTkFont("Segoe UI", 13, "bold"), anchor="w").pack(
@@ -5363,9 +6238,7 @@ class Reglages:
                      justify="left", wraplength=390).pack(fill="x", padx=6, pady=(8, 0))
 
     def _choix(self, parent, valeurs, variable, commande):
-        ctk.CTkSegmentedButton(parent, values=list(valeurs), variable=variable, height=32,
-                               selected_color=ACCENT, selected_hover_color="#4F46E5",
-                               command=commande).pack(fill="x", padx=6, pady=(6, 0))
+        ChoixRelief(parent, list(valeurs), variable, commande).pack(fill="x", padx=2, pady=(4, 0))
 
     def _interrupteur(self, parent, titre, detail, commande, haut=14, avec_detail=False):
         """Une ligne « titre + explication » avec son interrupteur à droite (et son explication, si elle change)."""
@@ -5377,35 +6250,40 @@ class Reglages:
         explication = ctk.CTkLabel(textes, text=detail, text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
                                    anchor="w")
         explication.pack(fill="x")
-        interrupteur = ctk.CTkSwitch(ligne, text="", command=commande, width=52,
-                                     switch_width=46, switch_height=24, progress_color=ACCENT)
+        interrupteur = InterrupteurRelief(ligne, commande)
         interrupteur.pack(side="right")
         return (interrupteur, explication) if avec_detail else interrupteur
 
     def afficher_carte(self):
-        """Les interrupteurs de la qualité des traductions (carte graphique, grand modèle, IA locale), et où chacun
-        en est."""
+        """La qualité choisie, et où en sont les moyens qu'elle utilise (carte graphique, grand modèle, IA)."""
         app = self.app
-        for interrupteur, detail, cle, etat, explication, actif in (
-                (self.carte_graphique, self.detail_carte, "carte_graphique", app.etat_carte,
-                 "Traductions environ 10 fois plus rapides", "✓ Active : traductions environ 10 fois plus rapides"),
-                (self.grand_modele, self.detail_grand_modele, "grand_modele", getattr(app, "etat_grand_modele", ""),
-                 "Bien meilleur, toutes langues · 3 Go, avec la carte graphique", "✓ Actif : toutes les langues"),
-                (self.ia_locale, self.detail_ia, "ia_locale", getattr(app, "etat_ia", ""),
-                 "Le sens et les expressions des phrases · avec Ollama, 3,3 Go", "✓ Active : le sens et les expressions")):
-            (interrupteur.select if app.config.get(cle) else interrupteur.deselect)()
-            etat = etat or ("Désactivé" if not app.config.get(cle) else "")
-            if etat in ("Active", "Actif"):
-                texte, couleur = actif, ("#1E8E3E", "#5BD17F")
-            else:
-                texte, couleur = explication + (f" · {etat}" if etat else ""), self.GRIS
-            detail.configure(text=texte, text_color=couleur, wraplength=330, justify="left")
-            interrupteur.configure(state="disabled" if etat.startswith("Pas de carte") else "normal")
+        niveau = app.niveau_qualite
+        self.qualite.set(NIVEAUX_QUALITE[niveau])
+        moyens = [("Carte graphique", app.etat_carte), ("Grand modèle", getattr(app, "etat_grand_modele", ""))]
+        moyens = {"normale": [], "meilleure": moyens,
+                  "maximale": moyens + [("IA", getattr(app, "etat_ia", ""))]}[niveau]
+        en_attente = []
+        for nom, etat in moyens:
+            etat = etat or "préparation…"
+            if etat.startswith("Pas de carte NVIDIA"):
+                etat = "pas de carte NVIDIA, le processeur traduit"
+                if any(e.endswith(etat) for e in en_attente):
+                    continue
+                en_attente.append(etat[0].upper() + etat[1:])
+            elif etat not in ("Active", "Actif"):
+                en_attente.append(f"{nom} : {etat}")
+        if niveau == "normale":
+            texte, couleur = "Le processeur traduit : rien de plus à télécharger", self.GRIS
+        elif en_attente:
+            texte, couleur = " · ".join(en_attente), self.GRIS
+        else:
+            texte = ("✓ Carte graphique et grand modèle actifs" if niveau == "meilleure"
+                     else "✓ Tout est actif, avec l'IA : le sens et les expressions")
+            couleur = ("#1E8E3E", "#5BD17F")
+        self.detail_qualite.configure(text=texte, text_color=couleur)
 
     def _bouton_discret(self, parent, texte, commande, largeur):
-        return ctk.CTkButton(parent, text=texte, width=largeur or 260, height=32, command=commande,
-                             fg_color="transparent", border_width=1, border_color=("#D0D3DE", "#3A3D4E"),
-                             text_color=("#30333F", "#E4E6EE"), hover_color=("#ECEDF2", "#232533"))
+        return BoutonRelief(parent, texte, commande, largeur)
 
     # ---- état affiché
 
@@ -5413,13 +6291,14 @@ class Reglages:
         """État de la traduction en direct (appelé souvent : seulement l'en-tête)."""
         app = self.app
         (self.interrupteur.select if app.actif else self.interrupteur.deselect)()
+        self.titre_marche.configure(text="Traduction en marche" if app.actif else "Traduction en pause")
         if not app.actif:
-            texte = "En pause"
+            texte = "Ton écran garde son texte d'origine"
         elif not nombre:
-            texte = "Active"
+            texte = "Ton écran est traduit tout seul"
         else:
             pluriel = "s" if nombre > 1 else ""
-            texte = f"Active · {nombre} texte{pluriel} traduit{pluriel} à l'écran"
+            texte = f"{nombre} texte{pluriel} traduit{pluriel} à l'écran"
         self.etat.configure(text=texte)
 
     def rafraichir(self):
@@ -5430,6 +6309,7 @@ class Reglages:
         self.langue.set(NOM_PAR_CODE[config["langue_cible"]])
         self.langue_ecriture.set(NOM_PAR_CODE[config["langue_ecriture"]])
         self._afficher_mots()
+        self.theme.set(THEMES.get(config["theme"], THEMES["systeme"])[0])
         self.style.set(NOMS_STYLES[config["style"]])
         self.taille.set(TAILLES[config["taille"]][0])
         self.opacite.set(config["opacite"])
@@ -5444,19 +6324,25 @@ class Reglages:
             texte = (f"✓ Connectée ({navigateurs[0]}) : elle traduit ce navigateur" if len(navigateurs) == 1
                      else "✓ Connectée : " + ", ".join(navigateurs))
             self.etat_extension.configure(text=texte, text_color=("#1E8E3E", "#5BD17F"))
+            self.etat_extension_accueil.configure(text="✓ Extension connectée (" + ", ".join(navigateurs) + ")")
+            self.bouton_extension.pack_forget()
         else:
             self.etat_extension.configure(text="Pas encore installée (ou navigateur fermé)", text_color=self.GRIS)
+            self.etat_extension_accueil.configure(text="Pour des sites traduits dans la page")
+            if not self.bouton_extension.winfo_ismapped():
+                self.bouton_extension.pack(side="right", padx=4)
         self.reactivite.set(REACTIVITES[config["reactivite"]][0])
         self.afficher_carte()
         combinaisons ={action: config[cle] for action, (cle, _, _) in RACCOURCIS.items()}
         if combinaisons != self._raccourcis_affiches:  # (changés dans « Options » : partout les nouveaux)
             self._raccourcis_affiches = combinaisons
-            rangees = {action: [ligne[0]] for action, ligne in self.lignes_raccourcis.items()}
-            rangees["pause"].append(self.touches_pause)
-            rangees["ecrire"] += [self.touches_ecrire_accueil, self.touches_ecrire_page]
-            for action, liste in rangees.items():
-                for rangee in liste:
-                    self._dessiner_touches(rangee, noms_des_touches(combinaisons[action]))
+            for action, ligne in self.lignes_raccourcis.items():
+                self._dessiner_touches(ligne[0], noms_des_touches(combinaisons[action]))
+            for action, etiquette in self.tuiles_raccourcis.items():
+                etiquette.configure(text="+".join(noms_des_touches(combinaisons[action])))
+            self.note_ecrire.configure(
+                text=f"Écris ton message dans n'importe quelle zone de texte, puis {self.app._nom_raccourci('ecrire')} : "
+                     "il est remplacé par sa traduction, prête à envoyer.")
         for action, (_, etiquette, _) in self.lignes_raccourcis.items():
             etiquette.configure(text=RACCOURCIS[action][2])
         aide = [f"{'+'.join(noms_des_touches(combinaisons[action]))} : {role}"
@@ -5533,10 +6419,8 @@ class Reglages:
             ligne = ctk.CTkFrame(self.liste_programmes, fg_color="transparent")
             ligne.pack(fill="x", padx=4, pady=2)
             ctk.CTkLabel(ligne, text=programme, font=ctk.CTkFont("Segoe UI", 13), anchor="w").pack(side="left", padx=4)
-            ctk.CTkButton(ligne, text="Retirer", width=70, height=24, font=ctk.CTkFont("Segoe UI", 12),
-                          fg_color="transparent", border_width=1, border_color=("#D0D3DE", "#3A3D4E"),
-                          text_color=("#30333F", "#E4E6EE"), hover_color=("#ECEDF2", "#232533"),
-                          command=lambda p=programme: self._retirer_programme(p)).pack(side="right")
+            BoutonRelief(ligne, "Retirer", lambda p=programme: self._retirer_programme(p), 70,
+                         hauteur=24).pack(side="right")
 
     def _mettre_a_jour_programmes(self):
         """Les programmes qui ont une fenêtre ouverte (même réduite), proposés pour la liste."""
@@ -5547,17 +6431,16 @@ class Reglages:
     # ---- actions
 
     def _onglet_change(self):
-        if self.onglets.get() == "Où traduire":
+        if self.onglets.get() == "Plus":
             self._mettre_a_jour_programmes()
-        elif self.onglets.get() == "Historique":
             self._suivre_historique()
 
     def _suivre_historique(self):
-        """Rubrique « Historique » ouverte et fenêtre visible : les nouvelles traductions s'y ajoutent."""
+        """Rubrique « Plus » (et son historique) ouverte et fenêtre visible : les nouvelles traductions s'y ajoutent."""
         if getattr(self, "_minuterie_historique", None):
             self.win.after_cancel(self._minuterie_historique)  # (une seule à la fois)
         self._minuterie_historique = None
-        if self.onglets.get() != "Historique" or not self.win.winfo_viewable():
+        if self.onglets.get() != "Plus" or not self.win.winfo_viewable():
             return
         self.afficher_historique()
         self._minuterie_historique = self.win.after(2000, self._suivre_historique)
@@ -5626,10 +6509,10 @@ class Reglages:
 
     def montrer(self):
         self.rafraichir()
-        if self.onglets.get() == "Où traduire":
+        if self.onglets.get() == "Plus":
             self._mettre_a_jour_programmes()
-        self.win.deiconify()
-        if self.onglets.get() == "Historique":
+        apparaitre(self.win)
+        if self.onglets.get() == "Plus":
             self.win.after(100, self._suivre_historique)
         # Windows refuse souvent de passer une fenêtre au premier plan : on la met
         # brièvement « toujours au-dessus » pour qu'elle apparaisse devant les autres.
@@ -5656,7 +6539,8 @@ class ChoixLangues:
         fenetre = self.fenetre = ctk.CTkToplevel(app.root)
         fenetre.title("Langues à traduire")
         fenetre.resizable(False, False)
-        fenetre.configure(fg_color=("#FFFFFF", "#12131A"))
+        fenetre.configure(fg_color=FOND)
+        teindre_cadre(fenetre)
         fenetre.protocol("WM_DELETE_WINDOW", self.fermer)
         fenetre.after(250, self._icone)  # customtkinter remet sa propre icône juste après l'ouverture
         gris = Reglages.GRIS
@@ -5678,7 +6562,7 @@ class ChoixLangues:
         self.menu_cible = ctk.CTkOptionMenu(
             ligne, values=list(LANGUES), variable=self.cible, width=200, height=32,
             font=ctk.CTkFont("Segoe UI", 13), dropdown_font=ctk.CTkFont("Segoe UI", 13),
-            fg_color=ACCENT, button_color="#4F46E5", button_hover_color="#4338CA",
+            fg_color=ACCENT, button_color=ACCENT_SURVOL, button_hover_color=ACCENT_FONCE,
             command=lambda _: self._mettre_a_jour())
         self.menu_cible.pack(side="right")
 
@@ -5690,7 +6574,7 @@ class ChoixLangues:
         self.cases = {}
         for i, (nom, code) in enumerate(LANGUES.items()):
             case = ctk.CTkCheckBox(grille, text=nom, font=ctk.CTkFont("Segoe UI", 13), command=self._mettre_a_jour,
-                                   checkbox_width=20, checkbox_height=20, fg_color=ACCENT, hover_color="#4F46E5")
+                                   checkbox_width=20, checkbox_height=20, fg_color=ACCENT, hover_color=ACCENT_SURVOL)
             case.grid(row=i // self.COLONNES, column=i % self.COLONNES, sticky="w", padx=(14, 4),
                       pady=(10 if i < self.COLONNES else 3, 10 if i >= len(LANGUES) - self.COLONNES else 3))
             if code in choisies:
@@ -5707,7 +6591,7 @@ class ChoixLangues:
         boutons = self.boutons = ctk.CTkFrame(corps, fg_color="transparent")
         boutons.pack(fill="x", pady=(12, 0))
         self.bouton_valider = ctk.CTkButton(boutons, text="", width=200, height=36, fg_color=ACCENT,
-                                            hover_color="#4F46E5", font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                                            hover_color=ACCENT_SURVOL, font=ctk.CTkFont("Segoe UI", 13, "bold"),
                                             command=self._valider)
         self.bouton_valider.pack(side="right")
         self.bouton_fermer = app.reglages._bouton_discret(boutons, "Plus tard" if bienvenue else "Annuler",
@@ -5800,7 +6684,8 @@ class ChoixLangues:
         x = (fenetre.winfo_screenwidth() - fenetre.winfo_reqwidth()) // 2
         y = max(0, (fenetre.winfo_screenheight() - fenetre.winfo_reqheight()) // 3)
         fenetre.geometry(f"+{x}+{y}")
-        fenetre.deiconify()
+        animer_boutons(fenetre)
+        apparaitre(fenetre)
         fenetre.attributes("-topmost", True)  # (même astuce que la fenêtre des réglages)
         fenetre.lift()
         fenetre.focus_force()
@@ -5818,7 +6703,7 @@ class ChoixLangues:
 class Application:
     def __init__(self, montrer_reglages=True):
         self.config = charger_config()
-        ctk.set_appearance_mode("dark")
+        ctk.set_appearance_mode(THEMES.get(self.config["theme"], THEMES["systeme"])[1])
         self.root = ctk.CTk()
         self.root.withdraw()
         # Une erreur dans la fenêtre (réglages, affichage) est notée dans le journal.
@@ -5862,7 +6747,6 @@ class Application:
         self.reveil_suivi = threading.Event()
         # Durées (secondes) relevées pour le journal : lecture de l'image, traduction des nouveaux textes.
         self.mesures = {"image": [], "traduction": [], "accessibilite": []}
-        self.presse_papiers_a_traduire = None  # (numéro du presse-papiers, texte copié)
         self.oubli_demande = False  # « Oublier les traductions mémorisées » (fait par le fil de traduction)
         self.extension_vue_le = {}  # programme du navigateur -> dernier signe de vie de son extension
         self._extension_affichee = frozenset()  # navigateurs de l'extension tels qu'affichés dans les réglages
@@ -5903,7 +6787,6 @@ class Application:
         if EST_EXE and DEPOT_GITHUB:
             threading.Thread(target=self._surveiller_mises_a_jour, name="mises_a_jour", daemon=True).start()
         self._demarrer_serveur()
-        self.root.after(400, self._surveiller_presse_papiers)
         self.root.after(3000, self._verifier_extension)
         self.root.after(100, self._garder_vitres)
         self.plein_ecran_signales = set()  # jeux en plein écran exclusif déjà signalés (une fois chacun)
@@ -5917,7 +6800,6 @@ class Application:
         self.raccourci_actif = None  # raccourci de secours (bibliothèque « keyboard »), s'il a fallu
         self.fil_entrees = None  # identifiant du fil qui écoute le clavier et la souris
         self.raccourci_demande = None  # (action, nouvelle combinaison) à enregistrer (par ce fil)
-        self.copie_demandee_le = -1e9  # raccourci « copier la traduction » (s'il n'est pas Ctrl+C)
         self.touches_capture = self._touches_capture()
         threading.Thread(target=self._ecouter_entrees, name="entrees", daemon=True).start()
         self._ecouter_fenetres()
@@ -6014,8 +6896,6 @@ class Application:
                         action = actions.get(message.wParam) if message.message == WM_HOTKEY else None
                         if action == "ecrire":
                             threading.Thread(target=self._ecrire_traduit, daemon=True).start()
-                        elif action == "copier":
-                            threading.Thread(target=self._copier_traduction, daemon=True).start()
                         elif action == "pause":
                             self.commandes.put(("basculer",))
                         elif action == "zone":
@@ -6042,8 +6922,8 @@ class Application:
     @staticmethod
     def _enregistrer_raccourci(combinaison, action="pause"):
         """(Fil des entrées.) True si Windows a accepté ce raccourci (il peut être pris par un autre programme).
-        Aucun raccourci, ou Ctrl+C pour copier (la copie normale, surveillée) : rien à enregistrer."""
-        if not combinaison or (action == "copier" and combinaison == RACCOURCIS["copier"][1]):
+        Aucun raccourci : rien à enregistrer."""
+        if not combinaison:
             return True
         touches = touches_du_raccourci(combinaison)
         return bool(touches) and bool(user32.RegisterHotKey(None, IDS_RACCOURCIS[action], touches[0] | 0x4000,
@@ -6488,7 +7368,7 @@ class Application:
             if a_jour and attendue:
                 self.reveil_accessibilite.set()  # positions stables : l'accessibilité peut relire
 
-    # ---- copier une traduction, naturellement
+    # ---- petits messages et touches tapées pour l'utilisateur
 
     def _signaler(self, message, duree=3.5):
         """Petit message en haut à droite de l'écran (même en pause), qui s'efface tout seul."""
@@ -6518,19 +7398,6 @@ class Application:
         while time.monotonic() < fin and any(user32.GetAsyncKeyState(t) & 0x8000
                                              for t in (0x10, 0x11, 0x12, 0x0D, 0x5B, 0x5C)):
             time.sleep(0.02)
-
-    def _copier_traduction(self):
-        """(Fil à part.) Raccourci « copier la traduction » choisi à la place de Ctrl+C : on copie (Ctrl+C), et
-        la surveillance du presse-papiers y met la traduction."""
-        self._attendre_touches_lachees()
-        self.copie_demandee_le = time.monotonic()
-        self._taper(0x11, 0x43)
-
-    def _copie_a_traduire(self):
-        """Une copie qui vient d'arriver doit-elle recevoir la traduction ? Avec Ctrl+C (par défaut) : toujours ;
-        avec un autre raccourci : seulement juste après lui ; sans raccourci : jamais."""
-        choisi = self.config[RACCOURCIS["copier"][0]]
-        return choisi == RACCOURCIS["copier"][1] or (bool(choisi) and time.monotonic() - self.copie_demandee_le < 2)
 
     def _nom_raccourci(self, action):
         """Le raccourci de cette action, lisible (« Ctrl+Alt+Entrée »)."""
@@ -6592,66 +7459,6 @@ class Application:
                 remettre_presse_papiers(avant)
             self.numero_presse_papiers = user32.GetClipboardSequenceNumber()
             self.ecriture_en_cours = False
-
-    def _surveiller_presse_papiers(self):
-        """Quand on copie (Ctrl+C) un texte affiché traduit, le presse-papiers reçoit la traduction."""
-        try:
-            numero = user32.GetClipboardSequenceNumber()
-            if numero != self.numero_presse_papiers:
-                self.numero_presse_papiers = numero
-                # (Pas nos propres copies de Ctrl+Alt+Entrée ; seulement les copies voulues : voir _copie_a_traduire.)
-                if self.actif and not self.ecriture_en_cours and self._copie_a_traduire():
-                    try:
-                        texte = self.root.clipboard_get()
-                    except tk.TclError:
-                        texte = ""  # pas du texte (image, fichiers…)
-                    if texte and len(texte) < 20_000 and self._vient_de_l_ecran(texte):
-                        self.presse_papiers_a_traduire = (numero, texte)
-                        self.reveil.set()
-        finally:
-            self.root.after(300, self._surveiller_presse_papiers)
-
-    def _vient_de_l_ecran(self, copie):
-        """Le texte copié vient-il des textes affichés avec leur traduction ? Une sélection dans un texte
-        traduit, ou plusieurs textes traduits copiés ensemble ; pas une phrase quelconque qui contient
-        par hasard un petit libellé traduit (« Home »), ni une copie faite dans un programme exclu."""
-        lecteur = self.lecteur
-        if lecteur is not None and not lecteur._a_traduire(programme_de_fenetre(user32.GetForegroundWindow())):
-            return False
-        copie = " ".join(copie.split()).casefold()
-        if len(copie) < 3:
-            return False
-        couvert = 0  # part de la copie faite de textes traduits
-        for original in self.calque.textes_traduits():
-            original = " ".join(original.split()).casefold()
-            if copie in original:
-                return True
-            if len(original) >= 3 and original in copie:
-                couvert += len(original)
-        return couvert >= 0.6 * len(copie)
-
-    def _cmd_presse_papiers(self, numero, traduction):
-        if user32.GetClipboardSequenceNumber() != numero:
-            return  # quelque chose d'autre a été copié entre-temps
-        self.root.clipboard_clear()
-        self.root.clipboard_append(traduction)
-        self.root.update_idletasks()
-        self.numero_presse_papiers = user32.GetClipboardSequenceNumber()
-
-    def _traduire_presse_papiers(self, traducteur, cible):
-        numero, texte = self.presse_papiers_a_traduire
-        self.presse_papiers_a_traduire = None
-        lignes = texte.splitlines()
-        traductions = traducteur.traduire([l.strip() for l in lignes if l.strip()], cible)
-        sortie, i = [], 0
-        for ligne in lignes:
-            if ligne.strip():
-                sortie.append(traductions[i] or ligne)
-                i += 1
-            else:
-                sortie.append(ligne)
-        if any(traductions):
-            self.commandes.put(("presse_papiers", numero, "\n".join(sortie)))
 
     # ---- boucle principale (thread Tk)
 
@@ -6817,12 +7624,14 @@ class Application:
         avec_carte = self.config["carte_graphique"] and carte_nvidia()
         carte = avec_carte and not bibliotheque_gpu_presente()
         madlad = avec_carte and self.config["grand_modele"] and not madlad_present()
-        if not manquantes and not grands and not carte and not madlad:
+        # IA locale : son moteur (30 Mo), puis, s'il trouve une carte graphique qui convient, son modèle (2,4 Go).
+        ia = self.config["ia_locale"] and self.ia.moteur.carte is not False and not ia_presente()
+        if not manquantes and not grands and not carte and not madlad and not ia:
             self.reglages.afficher_langues()
             return False
         log.info("Téléchargement des modèles : %s", ", ".join(
             [f"{de} → {vers}" for de, vers in manquantes] + grands + (["carte graphique"] if carte else [])
-            + (["grand modèle de traduction"] if madlad else [])))
+            + (["grand modèle de traduction"] if madlad else []) + (["IA locale"] if ia else [])))
         envoye_le = [0.0]
 
         def progression(texte, fraction):
@@ -6858,6 +7667,19 @@ class Application:
                         self.traducteur.oublier_madlad()  # (chargé à la prochaine traduction ; tout est retraduit)
                     except Exception:
                         log.exception("Grand modèle de traduction non téléchargé")
+                if ia:  # (en échec, les modèles habituels traduisent : on le note, sans rien bloquer)
+                    def ia_coupee():
+                        return self.arret.is_set() or not self.config["ia_locale"]
+
+                    try:  # (coupée pendant le téléchargement : il s'arrête, la suite continue)
+                        if (os.path.exists(moteur_ia()) or installer_moteur_ia(progression, ia_coupee)) \
+                                and self._chercher_carte_ia() \
+                                and (os.path.exists(chemin_modele_ia()) or installer_modele_ia(progression, ia_coupee)):
+                            threading.Thread(target=self._preparer_ia, daemon=True).start()
+                    except Exception as e:
+                        log.exception("IA locale non téléchargée")
+                        self.ia.etat = "téléchargement impossible : " + (str(e)[:60] or "erreur")
+                    self.commandes.put(("etat_carte",))
             except urllib.error.HTTPError as e:
                 log.exception("Téléchargement des modèles impossible")
                 erreur = f"le serveur des modèles a refusé (erreur {e.code}), réessaie plus tard"
@@ -6929,16 +7751,29 @@ class Application:
         sauver_config(self.config)
         self.calque.regler_opacite(round(pourcentage * 255 / 100))
 
+    def choisir_theme(self, theme):
+        """Thème de la fenêtre (et de la fenêtre de l'extension, qui le lit dans /etat)."""
+        self.config["theme"] = theme
+        sauver_config(self.config)
+        ctk.set_appearance_mode(THEMES[theme][1])
+        log.info("Thème choisi : %s", theme)
+
     def choisir_fondu(self, actif):
         self.config["fondu"] = actif
         sauver_config(self.config)
         self.calque.fondu = actif
 
-    # ---- IA locale (Ollama)
+    # ---- IA locale
 
     @property
     def etat_ia(self):
-        return "Désactivé" if not self.config["ia_locale"] else self.ia.etat
+        if self.ia.moteur.carte is False:
+            return "Pas de carte graphique adaptée sur ce PC"
+        if not self.config["ia_locale"]:
+            return "Désactivé"
+        if self.ia.etat:  # (« Active », démarrage, erreur)
+            return self.ia.etat
+        return "téléchargement de 2,4 Go au premier usage" if not ia_presente() else "démarrage…"
 
     def _ia_prete(self):
         """(Fil de l'IA.) De meilleures traductions sont prêtes : l'écran se met à jour, et les pages web (l'extension
@@ -6949,54 +7784,70 @@ class Application:
             self.traducteur.generation += 1
         self.commandes.put(("etat_carte",))
 
+    def _chercher_carte_ia(self):
+        """(Fil à part.) La carte graphique de l'IA, demandée une fois au moteur. False si aucune ne convient."""
+        moteur = self.ia.moteur
+        if moteur.carte is None:
+            moteur.carte = carte_pour_ia() or False
+            log.info("IA locale : %s", f"carte graphique {moteur.carte[1]}" if moteur.carte
+                     else "pas de carte graphique adaptée (il en faut une avec 4 Go)")
+        return moteur.carte
+
     def _preparer_ia(self):
-        """(Fil à part.) Ollama lancé, le modèle de l'IA téléchargé (une fois), puis l'IA se met au travail."""
+        """(Fil à part.) Le moteur et le modèle de l'IA téléchargés (par synchroniser_modeles), le moteur démarre sur la
+        carte graphique, puis l'IA se met au travail."""
         ia = self.ia
-        if not ollama_repond():
-            if not os.path.exists(chemin_ollama()):
-                ia.etat = "installe d'abord Ollama (gratuit) : ollama.com"
-                self.commandes.put(("etat_carte",))
-                return
-            ia.etat = "lancement d'Ollama…"
-            self.commandes.put(("etat_carte",))
-            subprocess.Popen([chemin_ollama()])
-            for _ in range(30):
-                if ollama_repond() or self.arret.wait(1):
-                    break
+        if not self.config["ia_locale"] or not ia_presente():
+            return
         try:
-            modeles = {m.get("name") for m in ollama("/api/tags", delai=10).get("models", [])}
-            if MODELE_IA not in modeles:
-                requete = urllib.request.Request(OLLAMA + "/api/pull", json.dumps({"model": MODELE_IA}).encode(),
-                                                 {"Content-Type": "application/json"})
-                with urllib.request.urlopen(requete, timeout=60) as reponse:
-                    for ligne in reponse:  # (une ligne d'avancement à la fois)
-                        avancement = json.loads(ligne)
-                        if avancement.get("total"):
-                            ia.etat = (f"téléchargement de l'IA : {avancement.get('completed', 0) / 2**30:.1f} / "
-                                       f"{avancement['total'] / 2**30:.1f} Go")
-                            self.commandes.put(("etat_carte",))
-                        if avancement.get("error"):
-                            raise OSError(avancement["error"])
-                        if not self.config["ia_locale"] or self.arret.is_set():
-                            return
-            ia.etat = "Active"
-            ia.actif = self.config["ia_locale"]
-            log.info("IA locale prête (%s)", MODELE_IA)
-            self.reveil.set()  # (ce qui est à l'écran lui est proposé)
+            if self._chercher_carte_ia():
+                ia.etat = "démarrage…"
+                self.commandes.put(("etat_carte",))
+                ia.moteur.demarrer()
+                ia.etat = "Active"
+                ia.actif = self.config["ia_locale"]
+                log.info("IA locale prête (%s)", MODELE_IA["fichier"])
+                self.reveil.set()  # (ce qui est à l'écran lui est proposé)
         except Exception as e:
             log.exception("IA locale indisponible")
-            ia.etat = "Ollama ne répond pas : " + str(e)[:50]
+            ia.etat = "le moteur de l'IA ne démarre pas : " + (str(e)[:60] or "erreur")
+        if not self.config["ia_locale"]:  # (coupée entre-temps)
+            ia.moteur.arreter()
         self.commandes.put(("etat_carte",))
+
+    @property
+    def niveau_qualite(self):
+        """« normale », « meilleure » ou « maximale », d'après les réglages."""
+        if self.config["ia_locale"]:
+            return "maximale"
+        return "meilleure" if self.config["carte_graphique"] or self.config["grand_modele"] else "normale"
+
+    def choisir_qualite(self, niveau):
+        """La qualité en un seul choix : chaque moyen (carte graphique, grand modèle, IA) s'allume ou se coupe."""
+        voulus = {"carte_graphique": niveau != "normale", "grand_modele": niveau != "normale",
+                  "ia_locale": niveau == "maximale"}
+        for cle, choisir in (("carte_graphique", self.choisir_carte_graphique),
+                             ("grand_modele", self.choisir_grand_modele), ("ia_locale", self.choisir_ia)):
+            if self.config[cle] != voulus[cle]:
+                choisir(voulus[cle])
+        log.info("Qualité choisie : %s", niveau)
+        self.reglages.afficher_carte()
 
     def choisir_ia(self, actif):
         self.config["ia_locale"] = actif
         sauver_config(self.config)
+        self.ia.etat = ""
         if actif:
-            if not ollama_repond() and not os.path.exists(chemin_ollama()):
-                os.startfile("https://ollama.com/download")  # (à installer une fois ; le réglage attend)
-            threading.Thread(target=self._preparer_ia, daemon=True).start()
+            if ia_presente():
+                threading.Thread(target=self._preparer_ia, daemon=True).start()
+            else:
+                self.synchroniser_modeles()  # (télécharge le moteur et le modèle, puis revient à _preparer_ia)
         else:
-            threading.Thread(target=self.ia.oublier, daemon=True).start()
+            def couper():
+                self.ia.oublier()
+                self.ia.moteur.arreter()
+
+            threading.Thread(target=couper, daemon=True).start()
             self.reveil.set()
         self.reglages.afficher_carte()
 
@@ -7172,7 +8023,7 @@ class Application:
         # (fichiers mis à jour, extension pas rechargée), elle le dit au lieu de mal marcher.
         # (Une zone choisie pendant la pause ne remet pas les pages web en traduction.)
         return {"actif": self.actif and not getattr(self, "zone_temporaire", False), "langue": self.config["langue_cible"],
-                "version": version, "extension": version_extension()}
+                "version": version, "extension": version_extension(), "theme": self.config.get("theme", "systeme")}
 
     def traduire_pour_extension(self, textes, agent):
         """(Fil du serveur.) Traductions de textes de page web ; None pour ce qui reste tel quel."""
@@ -7248,8 +8099,7 @@ class Application:
         elif touches_du_raccourci(combinaison) is None:
             self.reglages.fin_raccourci(action, "Il faut Ctrl, Alt, Maj ou Win + une touche (ou F1 à F12)")
             return
-        elif action not in CAPTURES and combinaison in RACCOURCIS_RESERVES \
-                and not (action == "copier" and combinaison == RACCOURCIS["copier"][1]):
+        elif action not in CAPTURES and combinaison in RACCOURCIS_RESERVES:
             self.reglages.fin_raccourci(action, "Déjà utilisée par Windows, choisis-en une autre")
             return
         else:
@@ -7324,6 +8174,7 @@ class Application:
         log.info("Arrêt")
         self.traducteur.sauver()
         self.arret.set()
+        self.ia.moteur.arreter()
         self.reveil.set()
         self.reveil_accessibilite.set()
         keyboard.unhook_all()
@@ -7486,11 +8337,6 @@ class Application:
                 self._oublier(traducteur)
             if not self.actif or self.arret.is_set():
                 continue
-            if self.presse_papiers_a_traduire:
-                try:
-                    self._traduire_presse_papiers(traducteur, self.config["langue_cible"])
-                except Exception:  # une copie qui échoue n'arrête pas la traduction de l'écran
-                    log.exception("Traduction du texte copié impossible")
             self._attendre_image_a_jour(self.reveil)
             debut = time.monotonic()
             try:
@@ -7503,11 +8349,15 @@ class Application:
                     # Relevé dans le journal, pour comprendre ce qui est traduit ou non, et le temps pris.
                     self._dernier_releve = debut
                     mesures, self.mesures = self.mesures, {"image": [], "traduction": [], "accessibilite": []}
+                    ocr = getattr(getattr(self, "suivi", None), "ocr", None)
+                    evitees = ocr.evitees if ocr else 0
+                    if ocr:
+                        ocr.evitees = 0
                     log.info("Relevé : %d éléments vus par l'accessibilité, %d morceaux dans l'image, "
-                             "%d textes à traduire, %d traductions affichées ; lecture de l'image %s ; "
-                             "accessibilité %s ; traduction de %d textes nouveaux %s",
+                             "%d textes à traduire, %d traductions affichées ; lecture de l'image %s "
+                             "(%d évitées) ; accessibilité %s ; traduction de %d textes nouveaux %s",
                              len(lecteur.vus), len(self.textes_image), len(textes), len(self.calque.affiches),
-                             duree_moyenne(mesures["image"]), duree_moyenne(mesures["accessibilite"]),
+                             duree_moyenne(mesures["image"]), evitees, duree_moyenne(mesures["accessibilite"]),
                              sum(n for n, _ in mesures["traduction"]),
                              duree_moyenne([d for _, d in mesures["traduction"]]))
                 # Ce qui est déjà traduit s'affiche tout de suite ; le reste arrive par petits paquets,
