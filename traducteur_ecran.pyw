@@ -5227,6 +5227,121 @@ class Relief(ctk.CTkFrame):
             self._poser(images)
 
 
+@functools.lru_cache(maxsize=64)
+def images_interrupteur(largeur, hauteur, sombre, echelle):
+    """(rail éteint, rail allumé, rond éteint, rond allumé) d'un interrupteur, en pixels réels. Le rond a un fond
+    transparent : son ombre se pose sur le rail, qu'il soit creux ou bleu."""
+    d, f = round(2 * echelle), round(2 * echelle)
+    rail = image_relief(largeur, hauteur, hauteur // 2, True, sombre, 1, d, f)
+    bleu = rail.copy()
+    masque = Image.new("L", (largeur * 2, hauteur * 2), 0)
+    ImageDraw.Draw(masque).rounded_rectangle((2, 2, largeur * 2 - 3, hauteur * 2 - 3), hauteur - 2, fill=235)
+    masque = masque.resize((largeur, hauteur), Image.LANCZOS)
+    bleu.paste(Image.new("RGBA", (largeur, hauteur), ("#2563EB", "#3B82F6")[sombre]), (0, 0), masque)
+    cote = hauteur - round(8 * echelle) + 2 * (d + 2 * f)  # le rond et la place de son ombre
+
+    def rond(couleur):
+        s = 2
+        image = Image.new("RGBA", (cote * s, cote * s), (0, 0, 0, 0))
+        m, r = (d + 2 * f) * s, (cote - 2 * (d + 2 * f)) * s
+        lumiere, ombre = OMBRES[sombre]
+        for teinte, dx in ((ombre, d * s), (lumiere, -d * s)):
+            calque = Image.new("RGBA", image.size, teinte[:3] + (0,))
+            ImageDraw.Draw(calque).ellipse((m + dx, m + dx, m + r + dx, m + r + dx), fill=teinte)
+            image.alpha_composite(calque.filter(ImageFilter.GaussianBlur(f * s)))
+        ImageDraw.Draw(image).ellipse((m, m, m + r, m + r), fill=couleur)
+        return image.resize((cote, cote), Image.LANCZOS)
+
+    return rail, bleu, rond(FOND[sombre]), rond("#FFFFFF")
+
+
+class InterrupteurRelief(tk.Canvas):
+    """Interrupteur comme celui de l'extension : rail creusé (bleu quand il est allumé), rond en relief qui glisse
+    avec un petit rebond. S'utilise comme un CTkSwitch : select, deselect, get, configure(state=…)."""
+
+    LARGEUR, HAUTEUR, DUREE = 52, 28, 280
+
+    def __init__(self, parent, commande=None):
+        self.echelle = parent._get_widget_scaling() if hasattr(parent, "_get_widget_scaling") else 1.0
+        self.l, self.h = round(self.LARGEUR * self.echelle), round(self.HAUTEUR * self.echelle)
+        super().__init__(parent, width=self.l, height=self.h, highlightthickness=0, bd=0, cursor="hand2")
+        self.commande, self.allume, self.actif = commande, False, True
+        self.avance = 0.0  # 0 : éteint ; 1 : allumé (le rond peut dépasser un peu pendant le rebond)
+        self._animation = None
+        self.bind("<Button-1>", self._clic)
+        ctk.AppearanceModeTracker.add(lambda _mode: self._dessiner(), self)
+        self._dessiner()
+
+    def _dessiner(self):
+        sombre = ctk.get_appearance_mode() == "Dark"
+        rail, bleu, rond, rond_blanc = images_interrupteur(self.l, self.h, sombre, round(self.echelle, 2))
+        melange = min(1.0, max(0.0, self.avance))
+        fond = Image.blend(rail, bleu, melange)
+        if not self.actif:
+            fond = Image.blend(fond, Image.new("RGBA", fond.size, FOND[sombre]), 0.55)
+        image = fond.copy()
+        bouton = Image.blend(rond, rond_blanc, melange)
+        marge = (bouton.width - (self.h - round(8 * self.echelle))) // 2
+        depart, course = round(4 * self.echelle) - marge, self.l - self.h
+        # (Le rond et son ombre débordent un peu du rail : posés sur un calque, qui accepte une position négative.)
+        calque = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        calque.paste(bouton, (depart + round(course * self.avance), (self.h - bouton.height) // 2))
+        image.alpha_composite(calque)
+        self.configure(bg=FOND[sombre])
+        self._image = ImageTk.PhotoImage(image)
+        self.delete("all")
+        self.create_image(0, 0, image=self._image, anchor="nw")
+
+    def _aller(self, allume, anime=True):
+        self.allume = allume
+        if self._animation:
+            self.after_cancel(self._animation)
+            self._animation = None
+        depart, arrivee = self.avance, 1.0 if allume else 0.0
+        if not anime or not self.winfo_ismapped():
+            self.avance = arrivee
+            self._dessiner()
+            return
+        etapes = 14
+
+        def rebond(x):  # (dépasse un peu, puis revient : comme l'extension)
+            return 1 + 2.2 * (x - 1) ** 3 + 1.2 * (x - 1) ** 2
+
+        def etape(numero):
+            self.avance = depart + (arrivee - depart) * rebond(numero / etapes)
+            self._dessiner()
+            self._animation = self.after(self.DUREE // etapes, etape, numero + 1) if numero < etapes else None
+
+        etape(1)
+
+    def _clic(self, _evenement):
+        if self.actif:
+            self._aller(not self.allume)
+            if self.commande:
+                self.commande()
+
+    def select(self):
+        if not self.allume:
+            self._aller(True)
+
+    def deselect(self):
+        if self.allume:
+            self._aller(False)
+
+    def get(self):
+        return 1 if self.allume else 0
+
+    def configure(self, cnf=None, **options):
+        if "state" in options:
+            self.actif = options.pop("state") != "disabled"
+            super().configure(cursor="hand2" if self.actif else "")
+            self._dessiner()
+        if cnf or options:
+            super().configure(cnf, **options)
+
+    config = configure
+
+
 class BoutonRelief(Relief):
     """Un bouton en relief, qui s'enfonce quand on appuie. S'utilise comme un CTkButton (configure, cget)."""
 
@@ -5640,8 +5755,7 @@ class Reglages:
         self.titre_marche.pack(fill="x")
         self.etat = ctk.CTkLabel(textes, text="", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12), anchor="w")
         self.etat.pack(fill="x")
-        self.interrupteur = ctk.CTkSwitch(ligne, text="", command=app.basculer, width=58, switch_width=52,
-                                          switch_height=28, **STYLE_INTERRUPTEUR)
+        self.interrupteur = InterrupteurRelief(ligne, app.basculer)
         self.interrupteur.pack(side="right")
         # Les langues en un coup d'œil : « Anglais, Japonais  →  Français ».
         bandeau = self.bandeau_langues = ctk.CTkFrame(onglet, fg_color="transparent")
@@ -6009,8 +6123,7 @@ class Reglages:
         explication = ctk.CTkLabel(textes, text=detail, text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
                                    anchor="w")
         explication.pack(fill="x")
-        interrupteur = ctk.CTkSwitch(ligne, text="", command=commande, width=52,
-                                     switch_width=46, switch_height=24, **STYLE_INTERRUPTEUR)
+        interrupteur = InterrupteurRelief(ligne, commande)
         interrupteur.pack(side="right")
         return (interrupteur, explication) if avec_detail else interrupteur
 

@@ -127,6 +127,16 @@ fin_animation = time.monotonic() + 2
 while choix_essai._glissement and time.monotonic() < fin_animation:
     racine_essai.update()
     time.sleep(0.01)
+interrupteur_essai = te.InterrupteurRelief(fenetre_essai.onglets.tab("Accueil"))
+interrupteur_essai.pack()
+racine_essai.update()
+interrupteur_essai.select()
+fin_animation = time.monotonic() + 2
+while interrupteur_essai._animation and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+verifier(interrupteur_essai.get() == 1 and interrupteur_essai._animation is None and interrupteur_essai.avance == 1.0,
+         "interrupteur : il glisse jusqu'au bout et reste allumé", interrupteur_essai.avance)
 verifier(choix_essai._glissement is None and abs(choix_essai.position - 2 * choix_essai._case()) < 1,
          "choix : la pastille glisse jusqu'au nouveau choix", (choix_essai.position, choix_essai._case()))
 verifier(relief_anime._animation is None and attendues is not None
