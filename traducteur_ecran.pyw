@@ -5032,6 +5032,8 @@ def image_relief(largeur, hauteur, rayon, creux, sombre, marge, decalage, flou):
     fond = FOND[sombre]
     lumiere, ombre = OMBRES[sombre]
     image = Image.new("RGBA", (l, h), fond)
+    if l - 2 * m < 2 * r + 2 or h - 2 * m < 2 * r + 2:
+        return image.resize((largeur, hauteur))  # (trop petit, le temps de la mise en place : pas d'ombre)
     cadre = (m, m, l - m, h - m)
     if not creux:
         for couleur, dx in ((ombre, d), (lumiere, -d)):  # (chacune à part : l'ombre ne cache pas la lumière)
@@ -5054,15 +5056,107 @@ def image_relief(largeur, hauteur, rayon, creux, sombre, marge, decalage, flou):
     return image.resize((largeur, hauteur), Image.LANCZOS)
 
 
+def melanger_couleurs(a, b, t):
+    """La couleur à t (0 à 1) entre a et b (« #RRGGBB »)."""
+    a, b = (tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in (a, b))
+    return "#" + "".join(f"{round(x + (y - x) * t):02X}" for x, y in zip(a, b))
+
+
+def en_douceur(t):
+    return 1 - (1 - t) ** 3  # (rapide au début, ralentit à la fin)
+
+
+def suivre_survol(dehors, morceaux, entree, sortie):
+    """entree() quand la souris arrive sur `dehors` (ou l'un de ses `morceaux`), sortie() quand elle en sort
+    vraiment : passer d'un morceau à l'autre ne compte pas (pas d'animation qui repart à chaque fois)."""
+    dedans = [False]
+
+    def arrivee(_e):
+        if not dedans[0]:
+            dedans[0] = True
+            entree()
+
+    def verifier():
+        x, y = dehors.winfo_pointerxy()
+        gauche, haut = dehors.winfo_rootx(), dehors.winfo_rooty()
+        if dedans[0] and not (gauche <= x < gauche + dehors.winfo_width() and haut <= y < haut + dehors.winfo_height()):
+            dedans[0] = False
+            sortie()
+
+    for morceau in morceaux:
+        morceau.bind("<Enter>", arrivee, add="+")
+        morceau.bind("<Leave>", lambda _e: dehors.after(30, verifier), add="+")
+
+
+def animer_bouton(bouton):
+    """Survol d'un bouton en fondu (la couleur glisse vers celle du survol) au lieu d'un changement d'un coup."""
+    normal, survol = bouton.cget("fg_color"), bouton.cget("hover_color")
+    if normal == "transparent" or getattr(bouton, "_survol_anime", False):
+        return
+    paires = [(n, s) for n, s in zip(*(c if isinstance(c, (tuple, list)) else (c, c) for c in (normal, survol)))]
+    if not all(isinstance(c, str) and c.startswith("#") and len(c) == 7 for paire in paires for c in paire):
+        return
+    bouton._survol_anime = True
+    bouton.configure(hover=False)
+    etat = {"t": 0.0, "but": 0.0, "minuterie": None}
+
+    def avancer():
+        pas = 1 / 6
+        etat["t"] = min(etat["but"], etat["t"] + pas) if etat["but"] > etat["t"] else max(etat["but"], etat["t"] - pas)
+        t = en_douceur(etat["t"])
+        bouton.configure(fg_color=tuple(melanger_couleurs(n, s, t) for n, s in paires))
+        etat["minuterie"] = bouton.after(20, avancer) if etat["t"] != etat["but"] else None
+
+    def aller(but):
+        etat["but"] = but
+        if etat["minuterie"] is None:
+            avancer()
+
+    suivre_survol(bouton, [bouton] + list(bouton.winfo_children()), lambda: aller(1.0), lambda: aller(0.0))
+
+
+def enfoncer(relief, bouton):
+    """Un bouton posé sur un relief : il s'enfonce quand on appuie, et remonte quand on lâche."""
+    for morceau in [bouton] + list(bouton.winfo_children()):
+        morceau.bind("<ButtonPress-1>", lambda _e: relief.changer("creux", 0.8), add="+")
+        morceau.bind("<ButtonRelease-1>", lambda _e: relief.changer("relief"), add="+")
+
+
+def apparaitre(fenetre, duree=160):
+    """Montre la fenêtre en fondu (transparente, puis de plus en plus opaque)."""
+    fenetre.attributes("-alpha", 0.0)
+    fenetre.deiconify()
+
+    def etape(numero, etapes=8):
+        fenetre.attributes("-alpha", en_douceur(numero / etapes))
+        if numero < etapes:
+            fenetre.after(duree // etapes, etape, numero + 1)
+
+    etape(1)
+
+
+def animer_boutons(widget):
+    """Tous les boutons de cette fenêtre : survol en fondu."""
+    for enfant in widget.winfo_children():
+        if isinstance(enfant, ctk.CTkButton):
+            animer_bouton(enfant)
+        animer_boutons(enfant)
+
+
 class Relief(ctk.CTkFrame):
-    """Un cadre en relief, creusé ou plat (`etat`) : ses ombres sont une image sous son contenu, refaite à sa taille.
+    """Un cadre en relief, creusé ou plat (`etat`, plus ou moins marqué selon `force`) : ses ombres sont une image
+    sous son contenu, refaite à sa taille. Un changement d'état se fait en fondu (quelques images intermédiaires).
     Le contenu se met dans `.dedans` (assez loin des bords pour ne pas cacher les ombres)."""
+
+    DUREE = 150  # ms d'une transition
+    ETAPES = 8
 
     def __init__(self, parent, etat="relief", rayon=14, marge=None, decalage=3, flou=4, interieur=None):
         super().__init__(parent, fg_color="transparent", corner_radius=0)
         if marge is None:
             marge = decalage + 2 * flou  # (toute l'ombre tient dans la marge : jamais coupée net)
-        self.etat, self.rayon, self.marge, self.decalage, self.flou = etat, rayon, marge, decalage, flou
+        self.etat, self.force = etat, 1.0
+        self.rayon, self.marge, self.decalage, self.flou = rayon, marge, decalage, flou
         # (Posée sous le contenu sans compter dans la taille du cadre : seul le contenu décide de la taille.)
         self.fond = ctk.CTkLabel(self, text="", fg_color="transparent", width=1, height=1)
         self.fond.place(x=0, y=0, relwidth=1, relheight=1)
@@ -5073,28 +5167,61 @@ class Relief(ctk.CTkFrame):
             retrait = max(retrait, marge + decalage + round(1.2 * flou) + 1)
         self.dedans = ctk.CTkFrame(self, fg_color=FOND, corner_radius=0)
         self.dedans.grid(row=0, column=0, sticky="nsew", padx=retrait, pady=retrait)  # (créé après : au-dessus)
-        self._dessine = None
+        self._taille, self._images, self._animation = None, None, None
         self.bind("<Configure>", lambda _e: self.redessiner())
 
-    def changer(self, etat):
-        if etat != self.etat:
-            self.etat = etat
-            self.redessiner()
-
-    def redessiner(self):
+    def _images_de(self, etat, force):
+        """(image claire, image sombre) de cet état, à la taille actuelle ; None tant que la taille est inconnue."""
         largeur, hauteur = self.winfo_width(), self.winfo_height()
-        if largeur < 4 or hauteur < 4 or (largeur, hauteur, self.etat) == self._dessine:
-            return
-        self._dessine = (largeur, hauteur, self.etat)
+        if largeur < 4 or hauteur < 4:
+            return None
+        plates = [Image.new("RGBA", (largeur, hauteur), FOND[sombre]) for sombre in (False, True)]
+        if etat == "plat" or force <= 0:
+            return plates
         echelle = self._get_widget_scaling()
-        if self.etat == "plat":
-            images = [Image.new("RGBA", (largeur, hauteur), FOND[sombre]) for sombre in (False, True)]
-        else:
-            images = [image_relief(largeur, hauteur, round(self.rayon * echelle), self.etat == "creux", sombre,
-                                   round(self.marge * echelle), round(self.decalage * echelle),
-                                   round(self.flou * echelle)) for sombre in (False, True)]
+        images = [image_relief(largeur, hauteur, round(self.rayon * echelle), etat == "creux", sombre,
+                               round(self.marge * echelle), round(self.decalage * echelle),
+                               round(self.flou * echelle)) for sombre in (False, True)]
+        return images if force >= 1 else [Image.blend(p, i, force) for p, i in zip(plates, images)]
+
+    def _poser(self, images):
+        self._images = images
+        echelle = self._get_widget_scaling()
+        largeur, hauteur = images[0].size
         self._image = ctk.CTkImage(images[0], images[1], size=(int(largeur / echelle), int(hauteur / echelle)))
         self.fond.configure(image=self._image)
+
+    def changer(self, etat, force=1.0, anime=True):
+        """Passe à cet état (en fondu, sauf `anime=False`)."""
+        if (etat, force) == (self.etat, self.force):
+            return
+        self.etat, self.force = etat, force
+        if self._animation:
+            self.after_cancel(self._animation)
+            self._animation = None
+        cible = self._images_de(etat, force)
+        if cible is None:
+            return
+        depart = self._images
+        if not anime or depart is None or depart[0].size != cible[0].size:
+            self._poser(cible)
+            return
+
+        def etape(numero):
+            t = en_douceur(numero / self.ETAPES)
+            self._poser([Image.blend(d, c, t) for d, c in zip(depart, cible)])
+            self._animation = self.after(self.DUREE // self.ETAPES, etape, numero + 1) if numero < self.ETAPES else None
+
+        etape(1)
+
+    def redessiner(self):
+        taille = (self.winfo_width(), self.winfo_height())
+        if taille == self._taille or self._animation:
+            return
+        images = self._images_de(self.etat, self.force)
+        if images is not None:
+            self._taille = taille
+            self._poser(images)
 
 
 class ChoixRelief(Relief):
@@ -5109,8 +5236,11 @@ class ChoixRelief(Relief):
             option.grid(row=0, column=colonne, sticky="ew")
             etiquette = ctk.CTkLabel(option.dedans, text=valeur, height=26, font=ctk.CTkFont("Segoe UI", 12))
             etiquette.pack(fill="x", padx=4)
-            for morceau in (option, option.fond, option.dedans, etiquette):
+            morceaux = (option, option.fond, option.dedans, etiquette)
+            for morceau in morceaux:
                 morceau.bind("<Button-1>", lambda _e, v=valeur: self._choisir(v))
+            suivre_survol(option, morceaux, lambda v=valeur: self._survoler(v, True),
+                          lambda v=valeur: self._survoler(v, False))
             self.options[valeur] = (option, etiquette)
         variable.trace_add("write", lambda *_: self._afficher())
         self._afficher()
@@ -5119,6 +5249,11 @@ class ChoixRelief(Relief):
         if valeur != self.variable.get():
             self.variable.set(valeur)
             self.commande(valeur)
+
+    def _survoler(self, valeur, dessus):
+        """Au survol, un choix (pas celui en cours) ressort un peu."""
+        if valeur != self.variable.get():
+            self.options[valeur][0].changer("relief", 0.45) if dessus else self.options[valeur][0].changer("plat")
 
     def _afficher(self):
         for valeur, (option, etiquette) in self.options.items():
@@ -5149,18 +5284,18 @@ class Navigation:
 
     def add(self, nom):
         page = ctk.CTkFrame(self.zone, fg_color="transparent")
-        element = Relief(self.barre, etat="creux", rayon=12, marge=4, decalage=2, flou=3, interieur=3)
-        element.changer("plat")  # (marges d'un élément creusé : la rubrique choisie le devient sans bouger)
+        element = Relief(self.barre, etat="creux", rayon=12, decalage=2, flou=3, interieur=3)
+        element.changer("plat", anime=False)  # (marges d'un élément creusé : la rubrique choisie le devient sans bouger)
         element.pack(fill="x", padx=8, pady=1)
         icone = ctk.CTkLabel(element.dedans, text=self.ICONES.get(nom, ""), width=26,
                              font=ctk.CTkFont("Segoe MDL2 Assets", 15))
         icone.pack(side="left", padx=(8, 6))
         texte = ctk.CTkLabel(element.dedans, text=nom, font=ctk.CTkFont("Segoe UI", 13), anchor="w")
         texte.pack(side="left", fill="x", expand=True)
-        for morceau in (element, element.fond, element.dedans, icone, texte):
+        morceaux = (element, element.fond, element.dedans, icone, texte)
+        for morceau in morceaux:
             morceau.bind("<Button-1>", lambda _e, n=nom: self._cliquer(n))
-            morceau.bind("<Enter>", lambda _e, n=nom: self._survoler(n, True))
-            morceau.bind("<Leave>", lambda _e, n=nom: self._survoler(n, False))
+        suivre_survol(element, morceaux, lambda n=nom: self._survoler(n, True), lambda n=nom: self._survoler(n, False))
         self.pages[nom], self.elements[nom] = page, (element, icone, texte)
         if self.actif is None:
             self.set(nom)
@@ -5173,6 +5308,8 @@ class Navigation:
 
     def _survoler(self, nom, dessus):
         if nom != self.actif:
+            element = self.elements[nom][0]
+            element.changer("relief", 0.5) if dessus else element.changer("plat")
             for etiquette in self.elements[nom][1:]:
                 etiquette.configure(text_color=TEXTE if dessus else self.GRIS)
 
@@ -5321,6 +5458,7 @@ class Reglages:
         self._onglet_apparence(onglets.add("Apparence"))
         self._onglet_plus(onglets.add("Plus"))
         self.rafraichir()
+        animer_boutons(root)
 
     # ---- onglets
 
@@ -5391,8 +5529,10 @@ class Reglages:
         self.resume_langues.pack(side="left", fill="x", expand=True, padx=(6, 6))
         changer = Relief(bandeau, rayon=12, decalage=2, flou=3, interieur=0)
         changer.pack(side="right")
-        ctk.CTkButton(changer.dedans, text="Changer", width=84, height=28, command=lambda: self.onglets.set("Langues"),
-                      **STYLE_BOUTON).pack()
+        bouton = ctk.CTkButton(changer.dedans, text="Changer", width=84, height=28,
+                               command=lambda: self.onglets.set("Langues"), **STYLE_BOUTON)
+        bouton.pack()
+        enfoncer(changer, bouton)
         # La qualité, en un seul choix (voir Application.choisir_qualite).
         ctk.CTkLabel(onglet, text="Qualité", text_color=self.GRIS, font=ctk.CTkFont("Segoe UI", 12),
                      anchor="w").pack(fill="x", padx=10)
@@ -6009,7 +6149,7 @@ class Reglages:
         self.rafraichir()
         if self.onglets.get() == "Plus":
             self._mettre_a_jour_programmes()
-        self.win.deiconify()
+        apparaitre(self.win)
         if self.onglets.get() == "Plus":
             self.win.after(100, self._suivre_historique)
         # Windows refuse souvent de passer une fenêtre au premier plan : on la met
@@ -6181,7 +6321,8 @@ class ChoixLangues:
         x = (fenetre.winfo_screenwidth() - fenetre.winfo_reqwidth()) // 2
         y = max(0, (fenetre.winfo_screenheight() - fenetre.winfo_reqheight()) // 3)
         fenetre.geometry(f"+{x}+{y}")
-        fenetre.deiconify()
+        animer_boutons(fenetre)
+        apparaitre(fenetre)
         fenetre.attributes("-topmost", True)  # (même astuce que la fenêtre des réglages)
         fenetre.lift()
         fenetre.focus_force()

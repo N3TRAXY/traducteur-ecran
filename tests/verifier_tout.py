@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import types
 import urllib.error
 from dataclasses import replace
@@ -102,6 +103,24 @@ verifier(list(fenetre_essai.onglets.pages) == ["Accueil", "Langues", "Apparence"
          and fenetre_essai.qualite.get() == "Maximale (IA)"
          and fenetre_essai.tuiles_raccourcis["zone"].cget("text") == "Ctrl+Alt+Z",
          "fenêtre des réglages : 4 rubriques, qualité et raccourcis affichés", list(fenetre_essai.onglets.pages))
+# Animations : un relief passe d'un état à l'autre en fondu et finit bien sur le nouvel état ; couleurs mêlées.
+racine_essai.geometry("+-4000+-4000")  # (affichée hors de l'écran : il faut une vraie taille pour dessiner)
+racine_essai.deiconify()
+relief_anime = te.Relief(fenetre_essai.onglets.tab("Accueil"))
+relief_anime.pack(fill="x")
+te.ctk.CTkLabel(relief_anime.dedans, text="essai").pack()
+racine_essai.update()
+relief_anime.redessiner()
+relief_anime.changer("creux")
+fin_animation = time.monotonic() + 2
+while relief_anime._animation and time.monotonic() < fin_animation:
+    racine_essai.update()
+    time.sleep(0.01)
+attendues = relief_anime._images_de("creux", 1.0)
+verifier(relief_anime._animation is None and attendues is not None
+         and list(relief_anime._images[0].getdata()) == list(attendues[0].getdata())
+         and te.melanger_couleurs("#000000", "#FFFFFF", 0.5) == "#808080",
+         "animations : fondu jusqu'au nouvel état, couleurs mêlées", relief_anime.etat)
 racine_essai.destroy()
 # La qualité en un seul choix allume ou coupe chaque moyen (carte graphique, grand modèle, IA).
 appels_qualite = []
